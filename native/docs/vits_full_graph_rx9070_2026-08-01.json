@@ -2,7 +2,7 @@
   "artifact": "moge2-vits-normal.safetensors",
   "canonicalCheckpointSha256": "79a16621928c2bf0ed04659218c55c01075e950507f40bb3332fb4c873d3e1dc",
   "derivedArtifactSha256": "b3fa57e11118887eb53f5790d7467b4327c71458754acb6d6ec3ca1288b60d14",
-  "releaseDllSha256": "d7867470f41d61a14cc1ae7cc58805821c1bc3c01f12c4c16c9e32313511cc60",
+  "releaseDllSha256": "473edbb42b20b5ed2c67d00bc2545e2ca9d4b0249df8751f411c0637da515a71",
   "device": "Radeon RX 9070",
   "reference": "official MoGe-2 PyTorch CPU, float32",
   "shape": [28, 42],
