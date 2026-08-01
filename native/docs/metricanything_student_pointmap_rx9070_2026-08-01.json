@@ -1,0 +1,44 @@
+{
+  "familyId": "metricanything",
+  "variant": "student-pointmap",
+  "canonicalCheckpoint": "yjh001/metricanything_student_pointmap/student_pointmap.pt",
+  "canonicalCheckpointSha256": "f3b49bf78bc2699e79a7c8a53498d4520b30d2c1620c5c4f6f02cc7e94229d58",
+  "canonicalCheckpointBytes": 1304997680,
+  "weightLicense": "Apache-2.0",
+  "derivedFormat": "MOGE2_SAFE_F32_V1",
+  "derivedArtifactSha256": "3df16506f3189f7d4185f57ab052907525868c1a9c678658ebd1080d422ce1af",
+  "derivedTensorCount": 484,
+  "releaseDllSha256": "b1d034496a9988cdd116f5e45d092aa146773e81e9d2c4bc3a0772a5e791cf2c",
+  "reference": "official MetricAnything Student PointMap PyTorch CPU float32",
+  "device": "AMD Radeon RX 9070",
+  "numericalParity": {
+    "shape": [28, 42],
+    "finiteSamples": 1176,
+    "finiteMaskAgreement": 1.0,
+    "maximumAbsoluteErrorMetres": 0.00013637542724609375,
+    "meanAbsoluteErrorMetres": 0.00013392636901699007,
+    "maximumRelativeError": 0.00002609494185890071,
+    "correlation": 0.9999999999716002,
+    "acceptanceMaximumRelativeError": 0.01
+  },
+  "abi2ExternalGpu": {
+    "stressFrames": 25,
+    "maximumSubmitReturnMs": 0.0109,
+    "tensorUploadByteDelta": 0,
+    "tensorDownloadByteDelta": 0,
+    "sourceFrameIds": "7007..7031",
+    "exactAdapterLuidSelection": true,
+    "adapterLuid": "8ea8010000000000",
+    "coreOwnedD3d12InputAndR32Output": true,
+    "cleanReleaseAndShutdown": true,
+    "queueWideIdleCalls": 0
+  },
+  "outputSemantics": {
+    "quantity": "metric_depth",
+    "format": "depth_metric_float32",
+    "unit": "metres",
+    "dimensions": "source",
+    "invalidPixels": "positive_infinity"
+  },
+  "status": "validated_d3d12_vulkan_gpu"
+}

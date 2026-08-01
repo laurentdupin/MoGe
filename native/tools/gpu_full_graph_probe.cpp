@@ -69,7 +69,8 @@ int main(int argc, char** argv) try {
             static_cast<std::streamsize>(mask.size() * sizeof(float)));
     }
     for (std::uint32_t level = 0; level < 5u; ++level) {
-        const std::uint32_t channels[] = {384u, 256u, 128u, 64u, 32u};
+        const std::uint32_t channels[] = {
+            config.decoder_embedding, 256u, 128u, 64u, 32u};
         const std::size_t count = std::size_t(width / 14u << level) *
             (height / 14u << level) * channels[level];
         std::vector<float> values(count);

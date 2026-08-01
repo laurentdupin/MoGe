@@ -48,22 +48,28 @@ if(WIN32)
   target_link_libraries(moge2_gpu_encoder_probe PRIVATE d3d12 dxgi)
 endif()
 
-add_library(moge2_native SHARED
+set(MOGE2_NATIVE_SOURCES
   src/inferbridge_harness.cpp src/external_gpu.cpp src/gpu_preprocess.cpp
   src/graph_gpu.cpp src/encoder_gpu.cpp src/model_config.cpp src/moge_operators.cpp
   src/gpu_model.cpp src/operators.cpp src/safetensors.cpp src/vulkan.cpp
   ${MOGE2_SHADER_HEADERS})
-target_include_directories(moge2_native PUBLIC include PRIVATE
-  src "${MOGE2_GENERATED_DIR}")
-target_link_libraries(moge2_native PRIVATE Vulkan::Vulkan)
-target_compile_definitions(moge2_native PRIVATE
-  INFERBRIDGE_HARNESS_BUILDING_LIBRARY MOGE2_BUILD_DLL)
-if(WIN32)
-  target_link_libraries(moge2_native PRIVATE d3d12 dxgi)
-endif()
-if(MSVC)
-  target_compile_options(moge2_native PRIVATE /W4 /permissive-)
-endif()
+function(moge2_native_target TARGET_NAME HARNESS_ID)
+  add_library(${TARGET_NAME} SHARED ${MOGE2_NATIVE_SOURCES})
+  target_include_directories(${TARGET_NAME} PUBLIC include PRIVATE
+    src "${MOGE2_GENERATED_DIR}")
+  target_link_libraries(${TARGET_NAME} PRIVATE Vulkan::Vulkan)
+  target_compile_definitions(${TARGET_NAME} PRIVATE
+    INFERBRIDGE_HARNESS_BUILDING_LIBRARY MOGE2_BUILD_DLL
+    "MOGE2_HARNESS_ID=\"${HARNESS_ID}\"")
+  if(WIN32)
+    target_link_libraries(${TARGET_NAME} PRIVATE d3d12 dxgi)
+  endif()
+  if(MSVC)
+    target_compile_options(${TARGET_NAME} PRIVATE /W4 /permissive-)
+  endif()
+endfunction()
+moge2_native_target(moge2_native "inferbridge.moge-2.native")
+moge2_native_target(metricanything_native "inferbridge.metricanything.native")
 
 add_executable(moge2_d3d12_full_graph tests/d3d12_full_graph.cpp)
 target_include_directories(moge2_d3d12_full_graph PRIVATE include)
@@ -71,6 +77,13 @@ target_link_libraries(moge2_d3d12_full_graph PRIVATE
   moge2_native d3d12 dxgi)
 if(MSVC)
   target_compile_options(moge2_d3d12_full_graph PRIVATE /W4 /permissive-)
+endif()
+add_executable(metricanything_d3d12_full_graph tests/d3d12_full_graph.cpp)
+target_include_directories(metricanything_d3d12_full_graph PRIVATE include)
+target_link_libraries(metricanything_d3d12_full_graph PRIVATE
+  metricanything_native d3d12 dxgi)
+if(MSVC)
+  target_compile_options(metricanything_d3d12_full_graph PRIVATE /W4 /permissive-)
 endif()
 
 add_executable(moge2_gpu_full_graph_probe

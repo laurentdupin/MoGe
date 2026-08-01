@@ -46,8 +46,9 @@ int main(int argc, char** argv) try {
     auto output = moge2_native::encode_vits(
         context, model, operators, config, std::move(input), width, height);
     std::vector<float> features(
-        std::uint64_t(output.token_width) * output.token_height * 384u);
-    std::vector<float> class_token(384u);
+        std::uint64_t(output.token_width) * output.token_height *
+        config.decoder_embedding);
+    std::vector<float> class_token(config.embedding);
     context.download(output.features, features.data(),
         features.size() * sizeof(float));
     context.download(output.class_token, class_token.data(),

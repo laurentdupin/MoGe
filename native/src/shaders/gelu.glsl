@@ -13,16 +13,22 @@ layout(push_constant) uniform Parameters {
     uint count;
 } parameters;
 
+float erf_high_accuracy(float value) {
+    const float magnitude = abs(value);
+    const float t = 1.0 / (1.0 + 0.3275911 * magnitude);
+    const float polynomial =
+        (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t -
+            0.284496736) * t + 0.254829592) * t;
+    const float result = 1.0 - polynomial * exp(-magnitude * magnitude);
+    return value < 0.0 ? -result : result;
+}
+
 void main() {
     const uint index = gl_GlobalInvocationID.x;
     if (index >= parameters.count) {
         return;
     }
     const float value = input_buffer.data[index];
-    const float cube = value * value * value;
-    const float inner =
-        0.7978845608028654 * (value + 0.044715 * cube);
     output_buffer.data[index] =
-        0.5 * value *
-        (1.0 + tanh(clamp(inner, -15.0, 15.0)));
+        0.5 * value * (1.0 + erf_high_accuracy(value * 0.7071067811865476));
 }

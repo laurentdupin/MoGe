@@ -46,7 +46,10 @@ struct ibrh_model {
 
 namespace {
 thread_local std::string g_error;
-constexpr char kHarnessId[] = "inferbridge.moge-2.native";
+#ifndef MOGE2_HARNESS_ID
+#define MOGE2_HARNESS_ID "inferbridge.moge-2.native"
+#endif
+constexpr char kHarnessId[] = MOGE2_HARNESS_ID;
 constexpr char kHarnessVersion[] = "0.1.0";
 
 std::string text(ibrh_string_view value) {

@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace moge2_native {
 namespace {
@@ -44,14 +45,16 @@ EncoderOutput encode_vits(
     da3_native::VulkanBuffer hidden = context.create_device_buffer(bytes * 4u);
     da3_native::VulkanBuffer scores = context.create_device_buffer(
         std::uint64_t(config.heads) * tokens * tokens * sizeof(float));
-    da3_native::VulkanBuffer feature_a = context.create_device_buffer(
-        std::uint64_t(patches) * 384u * sizeof(float));
-    da3_native::VulkanBuffer feature_b = context.create_device_buffer(
-        std::uint64_t(patches) * 384u * sizeof(float));
+    std::vector<da3_native::VulkanBuffer> captured;
+    captured.reserve(config.capture_count);
+    for (std::uint32_t index = 0u; index < config.capture_count; ++index) {
+        captured.push_back(context.create_device_buffer(
+            std::uint64_t(patches) * config.decoder_embedding * sizeof(float)));
+    }
     EncoderOutput output{
         token_width, token_height,
         context.create_device_buffer(
-            std::uint64_t(patches) * 384u * sizeof(float)),
+            std::uint64_t(patches) * config.decoder_embedding * sizeof(float)),
         context.create_device_buffer(embedding * sizeof(float))};
 
     context.batch([&] {
@@ -105,27 +108,36 @@ EncoderOutput encode_vits(
                 weight(model, block_name(block, ".ls2.gamma")),
                 static_cast<std::uint32_t>(elements), embedding);
             std::swap(state, next);
-            if (block == config.capture_first || block == config.capture_second) {
+            for (std::uint32_t capture = 0u;
+                capture < config.capture_count; ++capture) {
+                if (block != config.captures[capture]) continue;
                 operators.layer_norm(
                     normalized, state,
                     weight(model, std::string(kPrefix) + "norm.weight"),
                     weight(model, std::string(kPrefix) + "norm.bias"),
                     tokens, embedding, 1.0e-6f);
-                da3_native::VulkanBuffer& feature =
-                    block == config.capture_first ? feature_a : feature_b;
-                const char* projection = block == config.capture_first ?
-                    "encoder.output_projections.0" :
-                    "encoder.output_projections.1";
+                const std::string projection = "encoder.output_projections." +
+                    std::to_string(capture);
                 operators.project_tokens(
-                    feature, normalized,
-                    weight(model, std::string(projection) + ".weight"),
-                    weight(model, std::string(projection) + ".bias"),
-                    token_width, token_height, embedding, 384u);
+                    captured[capture], normalized,
+                    weight(model, projection + ".weight"),
+                    weight(model, projection + ".bias"),
+                    token_width, token_height, embedding,
+                    config.decoder_embedding);
             }
         }
-        operators.add(
-            output.features, feature_a, feature_b,
-            patches * 384u);
+        da3_native::VulkanBuffer accumulator = std::move(captured[0]);
+        for (std::uint32_t capture = 1u;
+            capture < config.capture_count; ++capture) {
+            const bool last = capture + 1u == config.capture_count;
+            da3_native::VulkanBuffer sum = last ? da3_native::VulkanBuffer{} :
+                context.create_device_buffer(std::uint64_t(patches) *
+                    config.decoder_embedding * sizeof(float));
+            da3_native::VulkanBuffer& destination = last ? output.features : sum;
+            operators.add(destination, accumulator, captured[capture],
+                patches * config.decoder_embedding);
+            if (!last) accumulator = std::move(sum);
+        }
     });
     context.copy(
         output.class_token, 0u, normalized, 0u,

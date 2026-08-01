@@ -15,7 +15,9 @@ using da3_native::VulkanBuffer;
 using da3_native::VulkanContext;
 using da3_native::VulkanOperators;
 
-constexpr std::array<std::uint32_t, 5> kChannels{384u, 256u, 128u, 64u, 32u};
+std::array<std::uint32_t, 5> decoder_channels(const ModelConfig& config) {
+    return {config.decoder_embedding, 256u, 128u, 64u, 32u};
+}
 
 const VulkanBuffer& tensor(const GpuModel& model, const std::string& name) {
     return model.tensor(name).buffer;
@@ -70,62 +72,68 @@ VulkanBuffer resample(
     VulkanContext& context, VulkanOperators& operators,
     MoGeOperators& moge, const GpuModel& model, const VulkanBuffer& input,
     const std::string& stack, std::uint32_t level,
-    std::uint32_t width, std::uint32_t height) {
+    std::uint32_t width, std::uint32_t height,
+    const std::array<std::uint32_t, 5>& channels) {
     const std::uint32_t intermediate_channels =
-        level < 3u ? kChannels[level + 1u] : kChannels[level];
+        level < 3u ? channels[level + 1u] : channels[level];
     VulkanBuffer upsampled = allocate(
         context, width * 2u, height * 2u, intermediate_channels);
     if (level < 3u) {
         operators.conv_transpose_nonoverlap(upsampled, input,
             tensor(model, stack + ".resamplers." + std::to_string(level) + ".0.weight"),
             tensor(model, stack + ".resamplers." + std::to_string(level) + ".0.bias"),
-            width, height, kChannels[level], kChannels[level + 1u], 2u);
+            width, height, channels[level], channels[level + 1u], 2u);
     } else {
         moge.bilinear(upsampled, input, width, height,
-            width * 2u, height * 2u, kChannels[level]);
+            width * 2u, height * 2u, channels[level]);
     }
     VulkanBuffer output = allocate(
-        context, width * 2u, height * 2u, kChannels[level + 1u]);
+        context, width * 2u, height * 2u, channels[level + 1u]);
     moge.conv2d_replicate(output, upsampled,
         tensor(model, stack + ".resamplers." + std::to_string(level) + ".1.weight"),
         tensor(model, stack + ".resamplers." + std::to_string(level) + ".1.bias"),
         width * 2u, height * 2u, intermediate_channels,
-        kChannels[level + 1u], 3u, 1u);
+        channels[level + 1u], 3u, 1u);
     return output;
 }
 
 std::array<VulkanBuffer, 5> neck(
     VulkanContext& context, VulkanOperators& operators, MoGeOperators& moge,
     const GpuModel& model, const VulkanBuffer& encoder,
-    std::uint32_t token_width, std::uint32_t token_height, float aspect) {
+    std::uint32_t token_width, std::uint32_t token_height, float aspect,
+    const std::array<std::uint32_t, 5>& channels,
+    std::uint32_t residual_blocks) {
     std::array<VulkanBuffer, 5> outputs;
     VulkanBuffer carried;
     for (std::uint32_t level = 0; level < 5u; ++level) {
         const std::uint32_t width = token_width << level;
         const std::uint32_t height = token_height << level;
-        const std::uint32_t input_channels = level == 0u ? 384u : 0u;
+        const std::uint32_t input_channels = level == 0u ? channels[0] : 0u;
         VulkanBuffer uv = allocate(context, width, height, input_channels + 2u);
         moge.concat_uv(uv, encoder, width, height, input_channels, aspect);
         VulkanBuffer feature = conv(context, operators, model, uv,
             "neck.input_blocks." + std::to_string(level), width, height,
-            input_channels + 2u, kChannels[level]);
+            input_channels + 2u, channels[level]);
         VulkanBuffer state;
         if (level == 0u) {
             state = std::move(feature);
         } else {
-            state = allocate(context, width, height, kChannels[level]);
+            state = allocate(context, width, height, channels[level]);
             operators.add(state, carried, feature,
-                width * height * kChannels[level]);
+                width * height * channels[level]);
         }
         if (level >= 1u && level <= 3u) {
-            state = residual(context, operators, moge, model, state,
-                "neck.res_blocks." + std::to_string(level) + ".0",
-                width, height, kChannels[level]);
+            for (std::uint32_t block = 0u; block < residual_blocks; ++block) {
+                state = residual(context, operators, moge, model, state,
+                    "neck.res_blocks." + std::to_string(level) + "." +
+                        std::to_string(block),
+                    width, height, channels[level]);
+            }
         }
         outputs[level] = std::move(state);
         if (level < 4u) {
             carried = resample(context, operators, moge, model, outputs[level],
-                "neck", level, width, height);
+                "neck", level, width, height, channels);
         }
     }
     return outputs;
@@ -135,7 +143,9 @@ VulkanBuffer head(
     VulkanContext& context, VulkanOperators& operators, MoGeOperators& moge,
     const GpuModel& model, const std::array<VulkanBuffer, 5>& features,
     const std::string& stack, std::uint32_t token_width,
-    std::uint32_t token_height, std::uint32_t output_channels) {
+    std::uint32_t token_height, std::uint32_t output_channels,
+    const std::array<std::uint32_t, 5>& channels,
+    std::uint32_t residual_blocks) {
     VulkanBuffer carried;
     VulkanBuffer state;
     for (std::uint32_t level = 0; level < 5u; ++level) {
@@ -143,22 +153,25 @@ VulkanBuffer head(
         const std::uint32_t height = token_height << level;
         VulkanBuffer feature = conv(context, operators, model, features[level],
             stack + ".input_blocks." + std::to_string(level), width, height,
-            kChannels[level], kChannels[level]);
+            channels[level], channels[level]);
         if (level == 0u) {
             state = std::move(feature);
         } else {
-            state = allocate(context, width, height, kChannels[level]);
+            state = allocate(context, width, height, channels[level]);
             operators.add(state, carried, feature,
-                width * height * kChannels[level]);
+                width * height * channels[level]);
         }
         if (level >= 1u && level <= 3u) {
-            state = residual(context, operators, moge, model, state,
-                stack + ".res_blocks." + std::to_string(level) + ".0",
-                width, height, kChannels[level]);
+            for (std::uint32_t block = 0u; block < residual_blocks; ++block) {
+                state = residual(context, operators, moge, model, state,
+                    stack + ".res_blocks." + std::to_string(level) + "." +
+                        std::to_string(block),
+                    width, height, channels[level]);
+            }
         }
         if (level < 4u) {
             carried = resample(context, operators, moge, model, state,
-                stack, level, width, height);
+                stack, level, width, height, channels);
         }
     }
     return conv(context, operators, model, state, stack + ".output_blocks.4",
@@ -167,20 +180,21 @@ VulkanBuffer head(
 
 VulkanBuffer metric_scale(
     VulkanContext& context, VulkanOperators& operators,
-    const GpuModel& model, const VulkanBuffer& class_token) {
-    VulkanBuffer a = context.create_device_buffer(384u * sizeof(float));
-    VulkanBuffer b = context.create_device_buffer(384u * sizeof(float));
-    VulkanBuffer c = context.create_device_buffer(384u * sizeof(float));
-    VulkanBuffer d = context.create_device_buffer(384u * sizeof(float));
+    const GpuModel& model, const VulkanBuffer& class_token,
+    std::uint32_t embedding) {
+    VulkanBuffer a = context.create_device_buffer(embedding * sizeof(float));
+    VulkanBuffer b = context.create_device_buffer(embedding * sizeof(float));
+    VulkanBuffer c = context.create_device_buffer(embedding * sizeof(float));
+    VulkanBuffer d = context.create_device_buffer(embedding * sizeof(float));
     VulkanBuffer result = context.create_device_buffer(sizeof(float));
     operators.linear(a, class_token, tensor(model, "scale_head.0.weight"),
-        tensor(model, "scale_head.0.bias"), 1u, 384u, 384u, false);
-    operators.relu(b, a, 384u);
+        tensor(model, "scale_head.0.bias"), 1u, embedding, embedding, false);
+    operators.relu(b, a, embedding);
     operators.linear(c, b, tensor(model, "scale_head.2.weight"),
-        tensor(model, "scale_head.2.bias"), 1u, 384u, 384u, false);
-    operators.relu(d, c, 384u);
+        tensor(model, "scale_head.2.bias"), 1u, embedding, embedding, false);
+    operators.relu(d, c, embedding);
     operators.linear(result, d, tensor(model, "scale_head.4.weight"),
-        tensor(model, "scale_head.4.bias"), 1u, 384u, 1u, false);
+        tensor(model, "scale_head.4.bias"), 1u, embedding, 1u, false);
     operators.exponential(result, 1u);
     return result;
 }
@@ -196,6 +210,7 @@ DepthOutput infer_vits_normal(
     if (!output_width || !output_height) throw std::invalid_argument("invalid output shape");
     EncoderOutput encoded = encode_vits(context, model, operators, config,
         std::move(normalized_encoder_image), encoder_width, encoder_height);
+    const auto channels = decoder_channels(config);
     const float aspect = float(output_width) / float(output_height);
     const std::uint32_t pixels = output_width * output_height;
     DepthOutput output{output_width, output_height,
@@ -207,11 +222,14 @@ DepthOutput infer_vits_normal(
     VulkanBuffer mask;
     context.batch([&] {
         auto features = neck(context, operators, moge, model, encoded.features,
-            encoded.token_width, encoded.token_height, aspect);
+            encoded.token_width, encoded.token_height, aspect, channels,
+            config.neck_residual_blocks);
         VulkanBuffer points_low = head(context, operators, moge, model, features,
-            "points_head", encoded.token_width, encoded.token_height, 3u);
+            "points_head", encoded.token_width, encoded.token_height, 3u,
+            channels, config.head_residual_blocks);
         VulkanBuffer mask_low = head(context, operators, moge, model, features,
-            "mask_head", encoded.token_width, encoded.token_height, 1u);
+            "mask_head", encoded.token_width, encoded.token_height, 1u,
+            channels, config.head_residual_blocks);
         VulkanBuffer points_resized = allocate(context, output_width, output_height, 3u);
         VulkanBuffer mask_resized = allocate(context, output_width, output_height, 1u);
         moge.bilinear(points_resized, points_low,
@@ -223,7 +241,8 @@ DepthOutput infer_vits_normal(
         points = allocate(context, output_width, output_height, 3u);
         mask = allocate(context, output_width, output_height, 1u);
         moge.remap_points_mask(points, mask, points_resized, mask_resized, pixels);
-        scale = metric_scale(context, operators, model, encoded.class_token);
+        scale = metric_scale(context, operators, model, encoded.class_token,
+            config.embedding);
         moge.solve_focal_shift(output.focal_shift, points, mask, output_width, output_height);
         if (output_image == nullptr) {
             moge.final_depth(output.depth, points, mask, output.focal_shift, scale, pixels);
