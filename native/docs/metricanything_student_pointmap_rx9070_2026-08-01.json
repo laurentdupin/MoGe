@@ -8,7 +8,7 @@
   "derivedFormat": "MOGE2_SAFE_F32_V1",
   "derivedArtifactSha256": "3df16506f3189f7d4185f57ab052907525868c1a9c678658ebd1080d422ce1af",
   "derivedTensorCount": 484,
-  "releaseDllSha256": "b1d034496a9988cdd116f5e45d092aa146773e81e9d2c4bc3a0772a5e791cf2c",
+  "releaseDllSha256": "e1eddfff7cce9e3143f0cc11072b528cc7bcdc8ae1381d372ab2da71e113f224",
   "reference": "official MetricAnything Student PointMap PyTorch CPU float32",
   "device": "AMD Radeon RX 9070",
   "numericalParity": {
@@ -23,7 +23,7 @@
   },
   "abi2ExternalGpu": {
     "stressFrames": 25,
-    "maximumSubmitReturnMs": 0.0109,
+    "maximumSubmitReturnMs": 0.009,
     "tensorUploadByteDelta": 0,
     "tensorDownloadByteDelta": 0,
     "sourceFrameIds": "7007..7031",
