@@ -188,17 +188,19 @@ VulkanBuffer metric_scale(
 
 DepthOutput infer_vits_normal(
     VulkanContext& context, GpuModel& model, VulkanOperators& operators,
-    VulkanBuffer normalized_encoder_image, std::uint32_t encoder_width,
+    MoGeOperators& moge, const ModelConfig& config,
+    VulkanBuffer normalized_encoder_image,
+    std::uint32_t encoder_width,
     std::uint32_t encoder_height, std::uint32_t output_width,
-    std::uint32_t output_height) {
+    std::uint32_t output_height, da3_native::VulkanImage* output_image) {
     if (!output_width || !output_height) throw std::invalid_argument("invalid output shape");
-    MoGeOperators moge(context);
-    EncoderOutput encoded = encode_vits(context, model, operators,
+    EncoderOutput encoded = encode_vits(context, model, operators, config,
         std::move(normalized_encoder_image), encoder_width, encoder_height);
     const float aspect = float(output_width) / float(output_height);
     const std::uint32_t pixels = output_width * output_height;
     DepthOutput output{output_width, output_height,
-        context.create_device_buffer(std::uint64_t(pixels) * sizeof(float)),
+        output_image == nullptr ? context.create_device_buffer(
+            std::uint64_t(pixels) * sizeof(float)) : VulkanBuffer{},
         {}, context.create_device_buffer(2u * sizeof(float)), {}, {}, {}, {}, {}};
     VulkanBuffer scale;
     VulkanBuffer points;
@@ -223,7 +225,12 @@ DepthOutput infer_vits_normal(
         moge.remap_points_mask(points, mask, points_resized, mask_resized, pixels);
         scale = metric_scale(context, operators, model, encoded.class_token);
         moge.solve_focal_shift(output.focal_shift, points, mask, output_width, output_height);
-        moge.final_depth(output.depth, points, mask, output.focal_shift, scale, pixels);
+        if (output_image == nullptr) {
+            moge.final_depth(output.depth, points, mask, output.focal_shift, scale, pixels);
+        } else {
+            moge.final_depth_image(*output_image, points, mask,
+                output.focal_shift, scale, output_width, output_height);
+        }
         output.neck_features = std::move(features);
         output.points_low = std::move(points_low);
         output.mask_low = std::move(mask_low);

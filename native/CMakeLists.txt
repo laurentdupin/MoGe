@@ -30,6 +30,7 @@ foreach(SHADER add_scaled add add_position bilinear_align_true
     bilinear_align_true_image bilinear_align_false bmm bmm_score_half bmm_value_half conv2d conv2d8
     conv2d_half conv2d8_half conv_transpose_nonoverlap
     conv2d_replicate concat_uv remap_points_mask solve_focal_shift final_depth
+    final_depth_image preprocess_moge_texture
     conv_transpose_nonoverlap_half elementwise gelu layer_norm linear linear16
     linear_vec8 linear_half linear16_half prepare_tokens position_bicubic
     project_tokens project_tokens_half relu softmax_lastdim softmax_lastdim_half
@@ -38,7 +39,7 @@ foreach(SHADER add_scaled add add_position bilinear_align_true
 endforeach()
 
 add_executable(moge2_gpu_encoder_probe
-  tools/gpu_encoder_probe.cpp src/encoder_gpu.cpp src/gpu_model.cpp
+  tools/gpu_encoder_probe.cpp src/encoder_gpu.cpp src/model_config.cpp src/gpu_model.cpp
   src/operators.cpp src/safetensors.cpp src/vulkan.cpp ${MOGE2_SHADER_HEADERS})
 target_include_directories(moge2_gpu_encoder_probe PRIVATE
   src "${MOGE2_GENERATED_DIR}")
@@ -47,8 +48,33 @@ if(WIN32)
   target_link_libraries(moge2_gpu_encoder_probe PRIVATE d3d12 dxgi)
 endif()
 
+add_library(moge2_native SHARED
+  src/inferbridge_harness.cpp src/external_gpu.cpp src/gpu_preprocess.cpp
+  src/graph_gpu.cpp src/encoder_gpu.cpp src/model_config.cpp src/moge_operators.cpp
+  src/gpu_model.cpp src/operators.cpp src/safetensors.cpp src/vulkan.cpp
+  ${MOGE2_SHADER_HEADERS})
+target_include_directories(moge2_native PUBLIC include PRIVATE
+  src "${MOGE2_GENERATED_DIR}")
+target_link_libraries(moge2_native PRIVATE Vulkan::Vulkan)
+target_compile_definitions(moge2_native PRIVATE
+  INFERBRIDGE_HARNESS_BUILDING_LIBRARY MOGE2_BUILD_DLL)
+if(WIN32)
+  target_link_libraries(moge2_native PRIVATE d3d12 dxgi)
+endif()
+if(MSVC)
+  target_compile_options(moge2_native PRIVATE /W4 /permissive-)
+endif()
+
+add_executable(moge2_d3d12_full_graph tests/d3d12_full_graph.cpp)
+target_include_directories(moge2_d3d12_full_graph PRIVATE include)
+target_link_libraries(moge2_d3d12_full_graph PRIVATE
+  moge2_native d3d12 dxgi)
+if(MSVC)
+  target_compile_options(moge2_d3d12_full_graph PRIVATE /W4 /permissive-)
+endif()
+
 add_executable(moge2_gpu_full_graph_probe
-  tools/gpu_full_graph_probe.cpp src/graph_gpu.cpp src/encoder_gpu.cpp
+  tools/gpu_full_graph_probe.cpp src/graph_gpu.cpp src/encoder_gpu.cpp src/model_config.cpp
   src/moge_operators.cpp src/gpu_model.cpp src/operators.cpp
   src/safetensors.cpp src/vulkan.cpp ${MOGE2_SHADER_HEADERS})
 target_include_directories(moge2_gpu_full_graph_probe PRIVATE

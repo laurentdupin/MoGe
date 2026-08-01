@@ -1,7 +1,8 @@
 {
   "artifact": "moge2-vits-normal.safetensors",
   "canonicalCheckpointSha256": "79a16621928c2bf0ed04659218c55c01075e950507f40bb3332fb4c873d3e1dc",
-  "derivedArtifactSha256": "79d1b0d9df534e5ac73234fbf84459b7b372bbb9b86fa571086a07d856c978b5",
+  "derivedArtifactSha256": "b3fa57e11118887eb53f5790d7467b4327c71458754acb6d6ec3ca1288b60d14",
+  "releaseDllSha256": "d7867470f41d61a14cc1ae7cc58805821c1bc3c01f12c4c16c9e32313511cc60",
   "device": "Radeon RX 9070",
   "reference": "official MoGe-2 PyTorch CPU, float32",
   "shape": [28, 42],
@@ -16,7 +17,33 @@
     "finiteMaskAgreement": 1.0,
     "maximumAbsoluteError": 0.0016431808471679688,
     "meanAbsoluteError": 0.0015354560455307364,
-    "maximumRelativeError": 0.001699478947557509
+    "maximumRelativeError": 0.001699478947557509,
+    "correlation": 0.9999999483878558,
+    "acceptance": {
+      "maximumRelativeError": 0.01,
+      "minimumFiniteMaskAgreement": 0.99,
+      "maskEdgePolicy": "Compare finite depth only where both implementations mark the pixel valid; require finite/invalid agreement separately. Invalid masked pixels are IEEE positive infinity, matching official MoGe-2 infer(apply_mask=true)."
+    }
   },
-  "status": "full_graph_numerical_parity; ABI2 external-resource harness pending"
+  "abi2ExternalGpu": {
+    "stressFrames": 25,
+    "maximumSubmitReturnMs": 0.099,
+    "tensorUploadByteDelta": 0,
+    "tensorDownloadByteDelta": 0,
+    "sourceFrameIds": "7007..7031",
+    "cleanReleaseAndShutdown": true,
+    "queueWideIdleCalls": 0
+  },
+  "productGodot": {
+    "outputs": 13,
+    "measuredOutputs": 10,
+    "lastSourceFrameId": 33,
+    "adapterLuid": "8ea8010000000000",
+    "output": "2560x1440 Core-owned shared D3D12 R32 metric texture",
+    "processFps": 302.2,
+    "maximumCaptureCallMs": 1.897,
+    "maximumSubmitReturnMs": 1.684,
+    "exitCode": 0
+  },
+  "status": "product_ready_d3d12_vulkan_gpu"
 }

@@ -1,6 +1,7 @@
 #include "gpu_model.h"
 #include "graph_gpu.h"
 #include "operators.h"
+#include "moge_operators.h"
 #include "safetensors.h"
 #include "vulkan.h"
 
@@ -34,11 +35,14 @@ int main(int argc, char** argv) try {
     da3_native::SafeTensors weights(argv[1]);
     da3_native::VulkanContext context(0u);
     da3_native::GpuModel model(weights, context);
+    const auto config = moge2_native::read_model_config(weights);
     da3_native::VulkanOperators operators(context);
+    moge2_native::MoGeOperators moge_operators(context);
     auto input = context.create_device_buffer(image.size() * sizeof(float));
     context.upload(input, image.data(), image.size() * sizeof(float));
     auto output = moge2_native::infer_vits_normal(context, model, operators,
-        std::move(input), width, height, output_width, output_height);
+        moge_operators, config, std::move(input), width, height,
+        output_width, output_height);
     std::vector<float> depth(std::uint64_t(output_width) * output_height);
     context.download(output.depth, depth.data(), depth.size() * sizeof(float));
     float scalars[3]{};

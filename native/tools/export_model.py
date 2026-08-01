@@ -5,13 +5,39 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import struct
 from pathlib import Path
 
 import torch
-from safetensors.torch import save_file
 
 CONVERTER = "moge2-export-pytorch-v1"
 FORMAT = "MOGE2_SAFE_F32_V1"
+
+
+def save_deterministic(tensors: dict[str, torch.Tensor], metadata: dict[str, str], output: Path) -> None:
+    """Write the simple contiguous F32 SafeTensors subset used by the DLL."""
+    header: dict[str, object] = {"__metadata__": dict(sorted(metadata.items()))}
+    payloads: list[bytes] = []
+    offset = 0
+    for name in sorted(tensors):
+        tensor = tensors[name].detach().cpu().to(torch.float32).contiguous()
+        payload = tensor.numpy().tobytes(order="C")
+        header[name] = {
+            "dtype": "F32",
+            "shape": list(tensor.shape),
+            "data_offsets": [offset, offset + len(payload)],
+        }
+        payloads.append(payload)
+        offset += len(payload)
+    encoded = json.dumps(
+        header, sort_keys=True, ensure_ascii=True,
+        separators=(",", ":")).encode("utf-8")
+    encoded += b" " * ((8 - len(encoded) % 8) % 8)
+    with output.open("wb") as destination:
+        destination.write(struct.pack("<Q", len(encoded)))
+        destination.write(encoded)
+        for payload in payloads:
+            destination.write(payload)
 
 
 def sha256(path: Path) -> str:
@@ -43,6 +69,19 @@ def main() -> None:
         if not isinstance(value, torch.Tensor):
             raise TypeError(f"non-tensor state entry: {name}")
         tensors[name] = value.detach().cpu().to(torch.float32).contiguous()
+    encoder = config["encoder"]
+    embedding = int(encoder["dim_out"])
+    backbone_embedding = int(tensors["encoder.backbone.cls_token"].shape[-1])
+    block_indices = sorted({
+        int(name.split(".")[3]) for name in tensors
+        if name.startswith("encoder.backbone.blocks.")
+    })
+    captures = list(encoder["intermediate_layers"])
+    if embedding != 384 or len(captures) != 2 or block_indices != list(range(len(block_indices))):
+        raise ValueError("unsupported MoGe-2 encoder topology")
+    tensors["moge2.config.encoder"] = torch.tensor([
+        backbone_embedding, backbone_embedding // 64,
+        len(block_indices), captures[0], captures[1]], dtype=torch.float32)
     metadata = {
         "format": FORMAT,
         "format_version": "1",
@@ -53,7 +92,7 @@ def main() -> None:
         "cache_key": f"moge2:{canonical}:{CONVERTER}:1:{args.variant}",
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    save_file(tensors, args.output, metadata=metadata)
+    save_deterministic(tensors, metadata, args.output)
     print(json.dumps({
         "format": FORMAT,
         "variant": args.variant,

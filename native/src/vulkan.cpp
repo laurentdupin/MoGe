@@ -2262,7 +2262,7 @@ void VulkanContext::dispatch_resources(
 }
 
 void VulkanContext::destroy(VulkanBuffer& buffer) noexcept {
-    if (batch_command_ != VK_NULL_HANDLE && !segmented_batch_ &&
+    if ((batch_command_ != VK_NULL_HANDLE || segmented_batch_) &&
         (buffer.buffer_ != VK_NULL_HANDLE ||
          buffer.memory_ != VK_NULL_HANDLE)) {
         batch_deferred_buffers_.push_back(

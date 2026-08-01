@@ -47,6 +47,13 @@ public:
         const da3_native::VulkanBuffer& focal_shift,
         const da3_native::VulkanBuffer& metric_scale,
         std::uint32_t pixels);
+    void final_depth_image(
+        da3_native::VulkanImage& depth,
+        const da3_native::VulkanBuffer& points,
+        const da3_native::VulkanBuffer& mask,
+        const da3_native::VulkanBuffer& focal_shift,
+        const da3_native::VulkanBuffer& metric_scale,
+        std::uint32_t width, std::uint32_t height);
 
 private:
     da3_native::VulkanContext& context_;
@@ -56,6 +63,7 @@ private:
     da3_native::VulkanPipeline remap_points_mask_;
     da3_native::VulkanPipeline solve_focal_shift_;
     da3_native::VulkanPipeline final_depth_;
+    da3_native::VulkanPipeline final_depth_image_;
 };
 
 }  // namespace moge2_native

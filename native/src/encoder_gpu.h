@@ -2,6 +2,7 @@
 
 #include "gpu_model.h"
 #include "operators.h"
+#include "model_config.h"
 
 #include <cstdint>
 
@@ -18,6 +19,7 @@ EncoderOutput encode_vits(
     da3_native::VulkanContext& context,
     da3_native::GpuModel& model,
     da3_native::VulkanOperators& operators,
+    const ModelConfig& config,
     da3_native::VulkanBuffer image,
     std::uint32_t width,
     std::uint32_t height);

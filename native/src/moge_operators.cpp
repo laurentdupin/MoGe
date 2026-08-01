@@ -4,6 +4,7 @@
 #include "concat_uv_spv.h"
 #include "conv2d_replicate_spv.h"
 #include "final_depth_spv.h"
+#include "final_depth_image_spv.h"
 #include "remap_points_mask_spv.h"
 #include "solve_focal_shift_spv.h"
 
@@ -29,13 +30,38 @@ MoGeOperators::MoGeOperators(da3_native::VulkanContext& context)
       solve_focal_shift_(context.create_pipeline(
           da3_solve_focal_shift_spv, da3_solve_focal_shift_spv_size, 3, 8)),
       final_depth_(context.create_pipeline(
-          da3_final_depth_spv, da3_final_depth_spv_size, 5, 4)) {
+          da3_final_depth_spv, da3_final_depth_spv_size, 5, 4)),
+      final_depth_image_(context.create_pipeline(
+          da3_final_depth_image_spv, da3_final_depth_image_spv_size,
+          {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+           VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+           VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+           VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+           VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+          {VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+           VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
+           VK_ACCESS_SHADER_READ_BIT}, 8)) {
     conv2d_replicate_.set_debug_name("moge2_conv2d_replicate");
     bilinear_.set_debug_name("moge2_bilinear_align_false");
     concat_uv_.set_debug_name("moge2_concat_uv");
     remap_points_mask_.set_debug_name("moge2_remap_points_mask");
     solve_focal_shift_.set_debug_name("moge2_solve_focal_shift");
     final_depth_.set_debug_name("moge2_final_depth");
+    final_depth_image_.set_debug_name("moge2_final_depth_image");
+}
+
+void MoGeOperators::final_depth_image(
+    da3_native::VulkanImage& depth,
+    const da3_native::VulkanBuffer& points,
+    const da3_native::VulkanBuffer& mask,
+    const da3_native::VulkanBuffer& focal_shift,
+    const da3_native::VulkanBuffer& metric_scale,
+    std::uint32_t width, std::uint32_t height) {
+    const std::uint32_t parameters[2]{width, height};
+    context_.dispatch_buffers_to_image(final_depth_image_,
+        {&points, &mask, &focal_shift, &metric_scale}, depth,
+        parameters, sizeof(parameters), divide_up(width, 8u),
+        divide_up(height, 8u), 1u);
 }
 
 void MoGeOperators::conv2d_replicate(

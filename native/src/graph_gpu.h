@@ -2,6 +2,8 @@
 
 #include "gpu_model.h"
 #include "operators.h"
+#include "moge_operators.h"
+#include "model_config.h"
 #include "vulkan.h"
 
 #include <cstdint>
@@ -26,10 +28,13 @@ DepthOutput infer_vits_normal(
     da3_native::VulkanContext& context,
     da3_native::GpuModel& model,
     da3_native::VulkanOperators& operators,
+    MoGeOperators& moge_operators,
+    const ModelConfig& config,
     da3_native::VulkanBuffer normalized_encoder_image,
     std::uint32_t encoder_width,
     std::uint32_t encoder_height,
     std::uint32_t output_width,
-    std::uint32_t output_height);
+    std::uint32_t output_height,
+    da3_native::VulkanImage* output_image = nullptr);
 
 }  // namespace moge2_native
