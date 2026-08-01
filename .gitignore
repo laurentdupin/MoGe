@@ -421,3 +421,5 @@ FodyWeavers.xsd
 /pretrained
 /.gradio
 /tmp
+/checkpoints/
+/native/out/
