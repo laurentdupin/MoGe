@@ -206,7 +206,8 @@ DepthOutput infer_vits_normal(
     VulkanBuffer normalized_encoder_image,
     std::uint32_t encoder_width,
     std::uint32_t encoder_height, std::uint32_t output_width,
-    std::uint32_t output_height, da3_native::VulkanImage* output_image) {
+    std::uint32_t output_height, float background_distance_metres,
+    da3_native::VulkanImage* output_image) {
     if (!output_width || !output_height) throw std::invalid_argument("invalid output shape");
     EncoderOutput encoded = encode_vits(context, model, operators, config,
         std::move(normalized_encoder_image), encoder_width, encoder_height);
@@ -245,10 +246,12 @@ DepthOutput infer_vits_normal(
             config.embedding);
         moge.solve_focal_shift(output.focal_shift, points, mask, output_width, output_height);
         if (output_image == nullptr) {
-            moge.final_depth(output.depth, points, mask, output.focal_shift, scale, pixels);
+            moge.final_depth(output.depth, points, mask, output.focal_shift,
+                scale, pixels, background_distance_metres);
         } else {
             moge.final_depth_image(*output_image, points, mask,
-                output.focal_shift, scale, output_width, output_height);
+                output.focal_shift, scale, output_width, output_height,
+                background_distance_metres);
         }
         output.neck_features = std::move(features);
         output.points_low = std::move(points_low);

@@ -46,14 +46,15 @@ public:
         const da3_native::VulkanBuffer& mask,
         const da3_native::VulkanBuffer& focal_shift,
         const da3_native::VulkanBuffer& metric_scale,
-        std::uint32_t pixels);
+        std::uint32_t pixels, float background_distance_metres);
     void final_depth_image(
         da3_native::VulkanImage& depth,
         const da3_native::VulkanBuffer& points,
         const da3_native::VulkanBuffer& mask,
         const da3_native::VulkanBuffer& focal_shift,
         const da3_native::VulkanBuffer& metric_scale,
-        std::uint32_t width, std::uint32_t height);
+        std::uint32_t width, std::uint32_t height,
+        float background_distance_metres);
 
 private:
     da3_native::VulkanContext& context_;

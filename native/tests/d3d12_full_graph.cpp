@@ -358,7 +358,8 @@ int main() try {
     check(api.runtime_create(sizeof(runtime_request), &runtime_request, &runtime),
         "runtime_create");
     const std::string model_path = model_environment;
-    const std::string parameters = "{\"NumTokens\":\"64\"}";
+    const std::string parameters =
+        "{\"NumTokens\":\"64\",\"BackgroundDistanceMetres\":\"25\"}";
     ibrh_model_load_request load{};
     load.struct_size = sizeof(load);
     load.api_version = IBRH_CURRENT_API_VERSION;
@@ -448,8 +449,10 @@ int main() try {
     const auto finite = [](float value) { return std::isfinite(value); };
     const auto finite_count = static_cast<std::size_t>(
         std::count_if(gpu.begin(), gpu.end(), finite));
-    if (finite_count < gpu.size() / 2u)
-        throw std::runtime_error("MoGe-2 external output has too few valid mask pixels");
+    if (finite_count != gpu.size())
+        throw std::runtime_error("MoGe-2 published a non-finite invalid depth pixel");
+    if (std::find(gpu.begin(), gpu.end(), 25.0f) == gpu.end())
+        throw std::runtime_error("MoGe-2 did not publish invalid pixels at 25 metres");
     float minimum = std::numeric_limits<float>::infinity();
     float maximum = -std::numeric_limits<float>::infinity();
     for (float value : gpu) if (finite(value)) {

@@ -35,6 +35,7 @@ struct ibrh_model {
     ibrh_runtime* runtime = nullptr;
     std::shared_ptr<moge2_native::ExternalGpu> gpu;
     std::uint32_t num_tokens = 1200u;
+    std::uint32_t background_distance_metres = 50u;
     std::shared_ptr<std::atomic<std::uint32_t>> occupied_slots =
         std::make_shared<std::atomic<std::uint32_t>>(0u);
     std::mutex queue_mutex;
@@ -50,7 +51,7 @@ thread_local std::string g_error;
 #define MOGE2_HARNESS_ID "inferbridge.moge-2.native"
 #endif
 constexpr char kHarnessId[] = MOGE2_HARNESS_ID;
-constexpr char kHarnessVersion[] = "0.1.0";
+constexpr char kHarnessVersion[] = "0.1.1";
 
 std::string text(ibrh_string_view value) {
     return value.data && value.size ? std::string(value.data, value.size) :
@@ -219,8 +220,14 @@ ibrh_result IBRH_CALL model_load(ibrh_runtime* runtime, std::size_t size,
     auto model = std::unique_ptr<ibrh_model>(new (std::nothrow) ibrh_model());
     if (!model) return IBRH_ERROR_INTERNAL;
     model->runtime = runtime;
-    (void)json_uint(text(request->parameters_json), "NumTokens", model->num_tokens);
+    const std::string parameters = text(request->parameters_json);
+    (void)json_uint(parameters, "NumTokens", model->num_tokens);
+    (void)json_uint(parameters, "BackgroundDistanceMetres",
+        model->background_distance_metres);
     if (model->num_tokens < 16u || model->num_tokens > 4096u)
+        return IBRH_ERROR_INVALID_ARGUMENT;
+    if (model->background_distance_metres < 1u ||
+        model->background_distance_metres > 1000u)
         return IBRH_ERROR_INVALID_ARGUMENT;
     try {
         model->gpu = moge2_native::create_external_gpu(path, runtime->device_index);
@@ -351,6 +358,7 @@ ibrh_result IBRH_CALL submit(ibrh_model* model, std::size_t size,
     job->request = {
         static_cast<std::uintptr_t>(input.resource.native_handle),
         input.resource.width, input.resource.height, model->num_tokens,
+        static_cast<float>(model->background_distance_metres),
         input.resource.pixel_format == IBRH_PIXEL_RGBA8,
         static_cast<std::uintptr_t>(input.synchronization.native_handle),
         input.synchronization.value,

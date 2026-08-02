@@ -35,6 +35,7 @@ DepthOutput infer_vits_normal(
     std::uint32_t encoder_height,
     std::uint32_t output_width,
     std::uint32_t output_height,
+    float background_distance_metres = 50.0f,
     da3_native::VulkanImage* output_image = nullptr);
 
 }  // namespace moge2_native

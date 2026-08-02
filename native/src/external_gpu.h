@@ -17,6 +17,7 @@ struct ExternalTextureRequest {
     std::uint32_t width = 0u;
     std::uint32_t height = 0u;
     std::uint32_t num_tokens = 1200u;
+    float background_distance_metres = 50.0f;
     bool rgba = false;
     std::uintptr_t wait_fence = 0u;
     std::uint64_t wait_value = 0u;

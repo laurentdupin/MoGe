@@ -30,7 +30,7 @@ MoGeOperators::MoGeOperators(da3_native::VulkanContext& context)
       solve_focal_shift_(context.create_pipeline(
           da3_solve_focal_shift_spv, da3_solve_focal_shift_spv_size, 3, 8)),
       final_depth_(context.create_pipeline(
-          da3_final_depth_spv, da3_final_depth_spv_size, 5, 4)),
+          da3_final_depth_spv, da3_final_depth_spv_size, 5, 8)),
       final_depth_image_(context.create_pipeline(
           da3_final_depth_image_spv, da3_final_depth_image_spv_size,
           {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -40,7 +40,7 @@ MoGeOperators::MoGeOperators(da3_native::VulkanContext& context)
            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
           {VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
            VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
-           VK_ACCESS_SHADER_READ_BIT}, 8)) {
+           VK_ACCESS_SHADER_READ_BIT}, 12)) {
     conv2d_replicate_.set_debug_name("moge2_conv2d_replicate");
     bilinear_.set_debug_name("moge2_bilinear_align_false");
     concat_uv_.set_debug_name("moge2_concat_uv");
@@ -56,11 +56,16 @@ void MoGeOperators::final_depth_image(
     const da3_native::VulkanBuffer& mask,
     const da3_native::VulkanBuffer& focal_shift,
     const da3_native::VulkanBuffer& metric_scale,
-    std::uint32_t width, std::uint32_t height) {
-    const std::uint32_t parameters[2]{width, height};
+    std::uint32_t width, std::uint32_t height,
+    float background_distance_metres) {
+    struct Parameters {
+        std::uint32_t width;
+        std::uint32_t height;
+        float background_distance_metres;
+    } parameters{width, height, background_distance_metres};
     context_.dispatch_buffers_to_image(final_depth_image_,
         {&points, &mask, &focal_shift, &metric_scale}, depth,
-        parameters, sizeof(parameters), divide_up(width, 8u),
+        &parameters, sizeof(parameters), divide_up(width, 8u),
         divide_up(height, 8u), 1u);
 }
 
@@ -139,10 +144,14 @@ void MoGeOperators::final_depth(
     const da3_native::VulkanBuffer& mask,
     const da3_native::VulkanBuffer& focal_shift,
     const da3_native::VulkanBuffer& metric_scale,
-    std::uint32_t pixels) {
+    std::uint32_t pixels, float background_distance_metres) {
+    struct Parameters {
+        std::uint32_t pixels;
+        float background_distance_metres;
+    } parameters{pixels, background_distance_metres};
     context_.dispatch(final_depth_,
         {&depth, &points, &mask, &focal_shift, &metric_scale},
-        &pixels, sizeof(pixels), divide_up(pixels, 256u), 1u, 1u);
+        &parameters, sizeof(parameters), divide_up(pixels, 256u), 1u, 1u);
 }
 
 }  // namespace moge2_native

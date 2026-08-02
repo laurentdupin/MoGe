@@ -185,7 +185,8 @@ public:
                 (void)infer_vits_normal(context_, model_, operators_,
                     moge_operators_, config_, std::move(image),
                     encoder_width, encoder_height,
-                    request.width, request.height, &output);
+                    request.width, request.height,
+                    request.background_distance_metres, &output);
                 context_.release_external_image(input,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_ACCESS_SHADER_READ_BIT);
