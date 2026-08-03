@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(moge2_native VERSION 0.1.1 LANGUAGES C CXX)
+include("${CMAKE_CURRENT_LIST_DIR}/../../native_support/InferBridgeNativeHarnessSupport.cmake")
+link_libraries(InferBridge::NativeHarnessSupport)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

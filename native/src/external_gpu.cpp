@@ -7,6 +7,7 @@
 #include "operators.h"
 #include "safetensors.h"
 #include "vulkan.h"
+#include "inferbridge/native_harness_resource_lifetime.h"
 
 #include <algorithm>
 #include <atomic>
@@ -75,16 +76,13 @@ class Job final : public ExternalJob {
 public:
     Job(std::shared_ptr<ExternalGpu> owner, da3_native::VulkanImage input,
         da3_native::VulkanImage output, da3_native::VulkanSubmission submission,
-        std::mutex& context_mutex)
+        inferbridge::native_harness::ResourceLifetimeDomainPtr lifetime)
         : owner_(std::move(owner)), input_(std::move(input)),
-          output_(std::move(output)), submission_(std::move(submission)),
-          context_mutex_(&context_mutex) {}
+            output_(std::move(output)), submission_(std::move(submission)),
+          lifetime_(std::move(lifetime)) {}
     ~Job() override {
-        try { submission_.wait(); } catch (...) {}
-        std::lock_guard<std::mutex> lock(*context_mutex_);
-        submission_ = {};
-        output_ = {};
-        input_ = {};
+        inferbridge::native_harness::wait_then_retire(
+            lifetime_, submission_, [this] { output_ = {}; input_ = {}; });
     }
     ExternalJobState state() const override {
         if (cancelled_.load(std::memory_order_relaxed))
@@ -98,7 +96,7 @@ private:
     da3_native::VulkanImage input_;
     da3_native::VulkanImage output_;
     da3_native::VulkanSubmission submission_;
-    std::mutex* context_mutex_ = nullptr;
+    inferbridge::native_harness::ResourceLifetimeDomainPtr lifetime_;
     std::atomic<bool> cancelled_{false};
 };
 #endif
@@ -157,7 +155,7 @@ public:
             std::nearbyint(std::sqrt(float(request.num_tokens) / aspect))));
         const std::uint32_t token_width = std::max(1u, static_cast<std::uint32_t>(
             std::nearbyint(std::sqrt(float(request.num_tokens) * aspect))));
-        std::lock_guard<std::mutex> lock(record_mutex_);
+        auto lifetime_guard = lifetime_->acquire();
         auto input = context_.import_d3d12_image(
             reinterpret_cast<void*>(request.input_texture), request.width,
             request.height, input_vk,
@@ -194,7 +192,7 @@ public:
                     VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT);
             });
         return std::make_shared<Job>(shared_from_this(), std::move(input),
-            std::move(output), std::move(submission), record_mutex_);
+            std::move(output), std::move(submission), lifetime_);
 #endif
     }
 
@@ -212,7 +210,8 @@ private:
     GpuPreprocessor preprocessor_;
 #if defined(_WIN32)
     ComPtr<ID3D12Device> d3d12_;
-    std::mutex record_mutex_;
+    inferbridge::native_harness::ResourceLifetimeDomainPtr lifetime_ =
+        inferbridge::native_harness::make_resource_lifetime_domain();
 #endif
 };
 }  // namespace
