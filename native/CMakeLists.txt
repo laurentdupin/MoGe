@@ -73,19 +73,21 @@ endfunction()
 moge2_native_target(moge2_native "inferbridge.moge-2.native")
 moge2_native_target(metricanything_native "inferbridge.metricanything.native")
 
-add_executable(moge2_d3d12_full_graph tests/d3d12_full_graph.cpp)
-target_include_directories(moge2_d3d12_full_graph PRIVATE include)
-target_link_libraries(moge2_d3d12_full_graph PRIVATE
-  moge2_native d3d12 dxgi)
-if(MSVC)
-  target_compile_options(moge2_d3d12_full_graph PRIVATE /W4 /permissive-)
-endif()
-add_executable(metricanything_d3d12_full_graph tests/d3d12_full_graph.cpp)
-target_include_directories(metricanything_d3d12_full_graph PRIVATE include)
-target_link_libraries(metricanything_d3d12_full_graph PRIVATE
-  metricanything_native d3d12 dxgi)
-if(MSVC)
-  target_compile_options(metricanything_d3d12_full_graph PRIVATE /W4 /permissive-)
+if(WIN32)
+  add_executable(moge2_d3d12_full_graph tests/d3d12_full_graph.cpp)
+  target_include_directories(moge2_d3d12_full_graph PRIVATE include)
+  target_link_libraries(moge2_d3d12_full_graph PRIVATE
+    moge2_native d3d12 dxgi)
+  if(MSVC)
+    target_compile_options(moge2_d3d12_full_graph PRIVATE /W4 /permissive-)
+  endif()
+  add_executable(metricanything_d3d12_full_graph tests/d3d12_full_graph.cpp)
+  target_include_directories(metricanything_d3d12_full_graph PRIVATE include)
+  target_link_libraries(metricanything_d3d12_full_graph PRIVATE
+    metricanything_native d3d12 dxgi)
+  if(MSVC)
+    target_compile_options(metricanything_d3d12_full_graph PRIVATE /W4 /permissive-)
+  endif()
 endif()
 
 add_executable(moge2_gpu_full_graph_probe
