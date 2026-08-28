@@ -8,6 +8,7 @@
 #include "safetensors.h"
 #include "vulkan.h"
 #include "inferbridge/native_harness_resource_lifetime.h"
+#include "inferbridge/native_harness_host_image.h"
 
 #include <algorithm>
 #include <atomic>
@@ -194,6 +195,37 @@ public:
         return std::make_shared<Job>(shared_from_this(), std::move(input),
             std::move(output), std::move(submission), lifetime_);
 #endif
+    }
+
+    void infer_host(const std::uint8_t* pixels, std::uint32_t width,
+        std::uint32_t height, std::size_t row_stride, bool rgba,
+        std::uint32_t num_tokens, float background_distance_metres,
+        float* output) override {
+        if (pixels == nullptr || output == nullptr || width == 0u ||
+            height == 0u || num_tokens < 16u)
+            throw std::invalid_argument("invalid MoGe-2 host request");
+        const float aspect = static_cast<float>(width) / height;
+        const std::uint32_t token_height = std::max(1u,
+            static_cast<std::uint32_t>(std::nearbyint(
+                std::sqrt(static_cast<float>(num_tokens) / aspect))));
+        const std::uint32_t token_width = std::max(1u,
+            static_cast<std::uint32_t>(std::nearbyint(
+                std::sqrt(static_cast<float>(num_tokens) * aspect))));
+        const std::uint32_t encoder_width = token_width * 14u;
+        const std::uint32_t encoder_height = token_height * 14u;
+        constexpr inferbridge::native_harness::ImageNormalization normalization{
+            {0.485f, 0.456f, 0.406f}, {0.229f, 0.224f, 0.225f}};
+        auto normalized = inferbridge::native_harness::
+            resize_bgra8_to_normalized_chw(pixels, width, height, row_stride,
+                encoder_width, encoder_height, rgba, normalization);
+        auto image = context_.create_device_buffer(
+            normalized.size() * sizeof(float));
+        context_.upload(image, normalized.data(), normalized.size() * sizeof(float));
+        auto depth = infer_vits_normal(context_, model_, operators_,
+            moge_operators_, config_, std::move(image), encoder_width,
+            encoder_height, width, height, background_distance_metres);
+        context_.download(depth.depth, output,
+            static_cast<std::size_t>(width) * height * sizeof(float));
     }
 
     void transfer_counters(

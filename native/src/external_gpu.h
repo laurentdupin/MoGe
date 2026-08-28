@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace moge2_native {
 
@@ -41,6 +43,10 @@ public:
     virtual ExternalGpuCapabilities capabilities() const = 0;
     virtual std::shared_ptr<ExternalJob> submit_texture(
         const ExternalTextureRequest& request) = 0;
+    virtual void infer_host(const std::uint8_t* pixels,
+        std::uint32_t width, std::uint32_t height, std::size_t row_stride,
+        bool rgba, std::uint32_t num_tokens,
+        float background_distance_metres, float* output) = 0;
     virtual void transfer_counters(
         std::uint64_t& upload_bytes, std::uint64_t& download_bytes) const = 0;
 };

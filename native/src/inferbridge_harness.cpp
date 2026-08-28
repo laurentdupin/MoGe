@@ -28,6 +28,14 @@ struct ibrh_job {
     std::shared_ptr<moge2_native::ExternalJob> gpu;
     std::mutex gpu_mutex;
     moge2_native::ExternalTextureRequest request{};
+    const std::uint8_t* host_input = nullptr;
+    float* host_output = nullptr;
+    std::size_t host_row_stride = 0u;
+    std::uint32_t host_width = 0u;
+    std::uint32_t host_height = 0u;
+    std::uint32_t host_num_tokens = 1200u;
+    float host_background_distance_metres = 50.0f;
+    bool host_rgba = false;
     std::uint64_t source_frame_id = 0u;
 };
 
@@ -140,6 +148,16 @@ void worker_loop(ibrh_model* model) {
             continue;
         }
         try {
+            if (job->host_input != nullptr) {
+                job->state.store(IBRH_JOB_RUNNING);
+                model->gpu->infer_host(job->host_input, job->host_width,
+                    job->host_height, job->host_row_stride, job->host_rgba,
+                    job->host_num_tokens, job->host_background_distance_metres,
+                    job->host_output);
+                job->state.store(IBRH_JOB_COMPLETE);
+                release(job);
+                continue;
+            }
             auto gpu = model->gpu->submit_texture(job->request);
             {
                 std::lock_guard<std::mutex> lock(job->gpu_mutex);
@@ -162,11 +180,16 @@ ibrh_result IBRH_CALL query_capabilities(
     output->struct_size = sizeof(*output);
     output->api_version = IBRH_CURRENT_API_VERSION;
     output->flags = IBRH_CAP_ASYNC_SUBMIT | IBRH_CAP_CANCELLATION |
-        IBRH_CAP_GPU_RESOURCES | IBRH_CAP_EXTERNAL_SYNCHRONIZATION |
-        IBRH_CAP_GPU_RESIDENT_OUTPUT;
-    output->input_domain_mask = 1ull << IBRH_RESOURCE_DOMAIN_D3D12;
-    output->output_domain_mask = 1ull << IBRH_RESOURCE_DOMAIN_D3D12;
+        IBRH_CAP_HOST_MEMORY;
+    output->input_domain_mask = 1ull << IBRH_RESOURCE_DOMAIN_HOST;
+    output->output_domain_mask = 1ull << IBRH_RESOURCE_DOMAIN_HOST;
+#if defined(_WIN32)
+    output->flags |= IBRH_CAP_GPU_RESOURCES |
+        IBRH_CAP_EXTERNAL_SYNCHRONIZATION | IBRH_CAP_GPU_RESIDENT_OUTPUT;
+    output->input_domain_mask |= 1ull << IBRH_RESOURCE_DOMAIN_D3D12;
+    output->output_domain_mask |= 1ull << IBRH_RESOURCE_DOMAIN_D3D12;
     output->synchronization_mask = 1ull << IBRH_SYNC_D3D12_FENCE;
+#endif
     output->maximum_inputs = 1u;
     output->maximum_outputs = 1u;
     output->maximum_in_flight_jobs = 3u;
@@ -232,7 +255,7 @@ ibrh_result IBRH_CALL model_load(ibrh_runtime* runtime, std::size_t size,
     try {
         model->gpu = moge2_native::create_external_gpu(path, runtime->device_index);
         const auto caps = model->gpu->capabilities();
-        if (!caps.available || (runtime->adapter_luid &&
+        if (runtime->adapter_luid && (!caps.available ||
             caps.adapter_luid != runtime->adapter_luid))
             return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
         model->worker = std::thread(worker_loop, model.get());
@@ -332,6 +355,29 @@ bool valid_binding(const ibrh_transfer_binding& input,
         input.resource.height == output.resource.height;
 }
 
+bool valid_host_binding(const ibrh_transfer_binding& input,
+    const ibrh_transfer_binding& output) {
+    const std::uint64_t input_bytes = static_cast<std::uint64_t>(
+        input.resource.row_stride_bytes) * input.resource.height;
+    const std::uint64_t output_bytes = static_cast<std::uint64_t>(
+        output.resource.width) * output.resource.height * sizeof(float);
+    return input.resource.domain == IBRH_RESOURCE_DOMAIN_HOST &&
+        output.resource.domain == IBRH_RESOURCE_DOMAIN_HOST &&
+        input.resource.kind == IBRH_RESOURCE_KIND_IMAGE_2D &&
+        output.resource.kind == IBRH_RESOURCE_KIND_IMAGE_2D &&
+        (input.resource.pixel_format == IBRH_PIXEL_BGRA8 ||
+         input.resource.pixel_format == IBRH_PIXEL_RGBA8) &&
+        output.resource.pixel_format == IBRH_PIXEL_DEPTH_METRIC_FLOAT32 &&
+        input.resource.native_handle_type == IBRH_NATIVE_HANDLE_HOST_POINTER &&
+        output.resource.native_handle_type == IBRH_NATIVE_HANDLE_HOST_POINTER &&
+        input.resource.native_handle != 0u && output.resource.native_handle != 0u &&
+        input.resource.width == output.resource.width &&
+        input.resource.height == output.resource.height &&
+        input.resource.row_stride_bytes >= input.resource.width * 4u &&
+        input.resource.byte_size >= input_bytes &&
+        output.resource.byte_size >= output_bytes;
+}
+
 ibrh_result IBRH_CALL submit(ibrh_model* model, std::size_t size,
     const ibrh_submit_request* request, ibrh_job** output) {
     if (!model || !request || !output) return IBRH_ERROR_INVALID_ARGUMENT;
@@ -339,9 +385,11 @@ ibrh_result IBRH_CALL submit(ibrh_model* model, std::size_t size,
     if (size < sizeof(*request) || request->struct_size < sizeof(*request))
         return IBRH_ERROR_STRUCT_TOO_SMALL;
     if (request->input_count != 1u || request->output_count != 1u ||
-        !request->inputs || !request->outputs ||
-        !valid_binding(request->inputs[0], request->outputs[0]))
+        !request->inputs || !request->outputs)
         return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
+    const bool host = valid_host_binding(request->inputs[0], request->outputs[0]);
+    const bool external = valid_binding(request->inputs[0], request->outputs[0]);
+    if (!host && !external) return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
     std::uint32_t previous = model->occupied_slots->load();
     do {
         if (previous >= 3u) return IBRH_ERROR_INVALID_STATE;
@@ -355,16 +403,29 @@ ibrh_result IBRH_CALL submit(ibrh_model* model, std::size_t size,
     job->source_frame_id = request->source_frame_id;
     const auto& input = request->inputs[0];
     const auto& target = request->outputs[0];
-    job->request = {
-        static_cast<std::uintptr_t>(input.resource.native_handle),
-        input.resource.width, input.resource.height, model->num_tokens,
-        static_cast<float>(model->background_distance_metres),
-        input.resource.pixel_format == IBRH_PIXEL_RGBA8,
-        static_cast<std::uintptr_t>(input.synchronization.native_handle),
-        input.synchronization.value,
-        static_cast<std::uintptr_t>(target.resource.native_handle),
-        static_cast<std::uintptr_t>(target.synchronization.native_handle),
-        target.synchronization.value};
+    if (host) {
+        job->host_input = reinterpret_cast<const std::uint8_t*>(
+            input.resource.native_handle);
+        job->host_output = reinterpret_cast<float*>(target.resource.native_handle);
+        job->host_row_stride = input.resource.row_stride_bytes;
+        job->host_width = input.resource.width;
+        job->host_height = input.resource.height;
+        job->host_num_tokens = model->num_tokens;
+        job->host_background_distance_metres =
+            static_cast<float>(model->background_distance_metres);
+        job->host_rgba = input.resource.pixel_format == IBRH_PIXEL_RGBA8;
+    } else {
+        job->request = {
+            static_cast<std::uintptr_t>(input.resource.native_handle),
+            input.resource.width, input.resource.height, model->num_tokens,
+            static_cast<float>(model->background_distance_metres),
+            input.resource.pixel_format == IBRH_PIXEL_RGBA8,
+            static_cast<std::uintptr_t>(input.synchronization.native_handle),
+            input.synchronization.value,
+            static_cast<std::uintptr_t>(target.resource.native_handle),
+            static_cast<std::uintptr_t>(target.synchronization.native_handle),
+            target.synchronization.value};
+    }
     {
         std::lock_guard<std::mutex> lock(model->queue_mutex);
         if (model->stopping) {
