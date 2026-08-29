@@ -275,10 +275,16 @@ void VulkanOperators::linear_int8(
     bool gelu) {
     if (!context_.supports_packed_int8_dot() || input_columns % 4u != 0u)
         throw std::runtime_error("accelerated packed INT8 linear is unavailable");
-    VulkanBuffer packed_input = context_.create_device_buffer(
-        std::uint64_t(rows) * (input_columns / 4u) * sizeof(std::uint32_t));
-    VulkanBuffer input_scales = context_.create_device_buffer(
-        std::uint64_t(rows) * sizeof(float));
+    VulkanBuffer& packed_input = int8_workspace_.packed(
+        std::uint64_t(rows) * (input_columns / 4u) * sizeof(std::uint32_t),
+        [this](std::uint64_t bytes) {
+            return context_.create_device_buffer(bytes);
+        });
+    VulkanBuffer& input_scales = int8_workspace_.scales(
+        std::uint64_t(rows) * sizeof(float),
+        [this](std::uint64_t bytes) {
+            return context_.create_device_buffer(bytes);
+        });
     context_.dispatch(
         quantize_rows_int8_, {&input, &packed_input, &input_scales},
         &input_columns, sizeof(input_columns), rows);
