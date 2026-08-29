@@ -16,6 +16,7 @@ struct ExternalGpuCapabilities {
 
 struct ExternalTextureRequest {
     std::uintptr_t input_texture = 0u;
+    std::uint64_t input_texture_identity = 0u;
     std::uint32_t width = 0u;
     std::uint32_t height = 0u;
     std::uint32_t num_tokens = 1200u;
@@ -24,6 +25,7 @@ struct ExternalTextureRequest {
     std::uintptr_t wait_fence = 0u;
     std::uint64_t wait_value = 0u;
     std::uintptr_t output_texture = 0u;
+    std::uint64_t output_texture_identity = 0u;
     std::uintptr_t signal_fence = 0u;
     std::uint64_t signal_value = 0u;
 };

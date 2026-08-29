@@ -8,6 +8,7 @@
 #include "safetensors.h"
 #include "vulkan.h"
 #include "inferbridge/native_harness_resource_lifetime.h"
+#include "inferbridge/native_harness_resource_cache.h"
 #include "inferbridge/native_harness_host_image.h"
 
 #include <algorithm>
@@ -75,15 +76,14 @@ void validate_texture(ID3D12Device* device, std::uintptr_t handle,
 
 class Job final : public ExternalJob {
 public:
-    Job(std::shared_ptr<ExternalGpu> owner, da3_native::VulkanImage input,
-        da3_native::VulkanImage output, da3_native::VulkanSubmission submission,
+    Job(std::shared_ptr<ExternalGpu> owner,
+        da3_native::VulkanSubmission submission,
         inferbridge::native_harness::ResourceLifetimeDomainPtr lifetime)
-        : owner_(std::move(owner)), input_(std::move(input)),
-            output_(std::move(output)), submission_(std::move(submission)),
+        : owner_(std::move(owner)), submission_(std::move(submission)),
           lifetime_(std::move(lifetime)) {}
     ~Job() override {
         inferbridge::native_harness::wait_then_retire(
-            lifetime_, submission_, [this] { output_ = {}; input_ = {}; });
+            lifetime_, submission_, [] {});
     }
     ExternalJobState state() const override {
         if (cancelled_.load(std::memory_order_relaxed))
@@ -94,8 +94,6 @@ public:
     void cancel() override { cancelled_.store(true, std::memory_order_relaxed); }
 private:
     std::shared_ptr<ExternalGpu> owner_;
-    da3_native::VulkanImage input_;
-    da3_native::VulkanImage output_;
     da3_native::VulkanSubmission submission_;
     inferbridge::native_harness::ResourceLifetimeDomainPtr lifetime_;
     std::atomic<bool> cancelled_{false};
@@ -147,24 +145,38 @@ public:
             DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM;
         const VkFormat input_vk = request.rgba ?
             VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_B8G8R8A8_UNORM;
-        validate_texture(d3d12_.Get(), request.input_texture,
-            request.width, request.height, input_dxgi);
-        validate_texture(d3d12_.Get(), request.output_texture,
-            request.width, request.height, DXGI_FORMAT_R32_FLOAT);
         const float aspect = float(request.width) / float(request.height);
         const std::uint32_t token_height = std::max(1u, static_cast<std::uint32_t>(
             std::nearbyint(std::sqrt(float(request.num_tokens) / aspect))));
         const std::uint32_t token_width = std::max(1u, static_cast<std::uint32_t>(
             std::nearbyint(std::sqrt(float(request.num_tokens) * aspect))));
         auto lifetime_guard = lifetime_->acquire();
-        auto input = context_.import_d3d12_image(
-            reinterpret_cast<void*>(request.input_texture), request.width,
-            request.height, input_vk,
-            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-        auto output = context_.import_d3d12_image(
-            reinterpret_cast<void*>(request.output_texture), request.width,
-            request.height, VK_FORMAT_R32_SFLOAT,
-            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+        const auto input_usage = VK_IMAGE_USAGE_SAMPLED_BIT |
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        const auto output_usage = VK_IMAGE_USAGE_STORAGE_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        auto& input = input_cache_.get_or_create({
+            inferbridge::native_harness::stable_resource_identity(
+                request.input_texture, request.input_texture_identity),
+            request.width, request.height, input_vk, input_usage}, [&] {
+                validate_texture(d3d12_.Get(), request.input_texture,
+                    request.width, request.height, input_dxgi);
+                return context_.import_d3d12_image(
+                    reinterpret_cast<void*>(request.input_texture),
+                    request.width, request.height, input_vk, input_usage);
+            });
+        auto& output = output_cache_.get_or_create({
+            inferbridge::native_harness::stable_resource_identity(
+                request.output_texture, request.output_texture_identity),
+            request.width, request.height, VK_FORMAT_R32_SFLOAT,
+            output_usage}, [&] {
+                validate_texture(d3d12_.Get(), request.output_texture,
+                    request.width, request.height, DXGI_FORMAT_R32_FLOAT);
+                return context_.import_d3d12_image(
+                    reinterpret_cast<void*>(request.output_texture),
+                    request.width, request.height, VK_FORMAT_R32_SFLOAT,
+                    output_usage);
+            });
         auto wait = context_.import_d3d12_fence(
             reinterpret_cast<void*>(request.wait_fence), request.wait_value);
         auto signal = context_.import_d3d12_fence(
@@ -192,8 +204,8 @@ public:
                 context_.release_external_image(output,
                     VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_WRITE_BIT);
             });
-        return std::make_shared<Job>(shared_from_this(), std::move(input),
-            std::move(output), std::move(submission), lifetime_);
+        return std::make_shared<Job>(shared_from_this(),
+            std::move(submission), lifetime_);
 #endif
     }
 
@@ -242,6 +254,10 @@ private:
     GpuPreprocessor preprocessor_;
 #if defined(_WIN32)
     ComPtr<ID3D12Device> d3d12_;
+    inferbridge::native_harness::StableResourceCache<
+        da3_native::VulkanImage> input_cache_;
+    inferbridge::native_harness::StableResourceCache<
+        da3_native::VulkanImage> output_cache_;
     inferbridge::native_harness::ResourceLifetimeDomainPtr lifetime_ =
         inferbridge::native_harness::make_resource_lifetime_domain();
 #endif

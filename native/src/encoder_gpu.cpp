@@ -1,4 +1,5 @@
 #include "encoder_gpu.h"
+#include "inferbridge/native_harness_precision.h"
 
 #include <stdexcept>
 #include <string>
@@ -10,12 +11,38 @@ namespace {
 constexpr const char* kPrefix = "encoder.backbone.";
 
 const da3_native::VulkanBuffer& weight(
-    const da3_native::GpuModel& model, const std::string& name) {
-    return model.tensor(name).buffer;
+    const da3_native::GpuModel& model, const std::string& name,
+    bool half = false) {
+    const da3_native::GpuTensor& tensor = model.tensor(name);
+    return half ? tensor.half_buffer : tensor.buffer;
 }
 
 std::string block_name(std::uint32_t block, const char* suffix) {
     return std::string(kPrefix) + "blocks." + std::to_string(block) + suffix;
+}
+
+void transformer_linear(
+    da3_native::VulkanOperators& operators,
+    const da3_native::GpuModel& model,
+    da3_native::VulkanBuffer& output,
+    const da3_native::VulkanBuffer& input,
+    const std::string& weight_name, const std::string& bias_name,
+    std::uint32_t rows, std::uint32_t input_columns,
+    std::uint32_t output_columns, bool gelu = false) {
+    const auto& tensor = model.tensor(weight_name);
+    if (model.uses_int8_weights()) {
+        operators.linear_int8(
+            output, input, tensor.int8_buffer, tensor.int8_scales,
+            model.tensor(bias_name).buffer,
+            rows, input_columns, output_columns, gelu);
+    } else {
+        operators.linear(
+            output, input,
+            model.uses_half_weights() ? tensor.half_buffer : tensor.buffer,
+            model.tensor(bias_name).buffer,
+            rows, input_columns, output_columns, gelu, false,
+            model.uses_half_weights());
+    }
 }
 }  // namespace
 
@@ -29,6 +56,7 @@ EncoderOutput encode_vits(
     std::uint32_t height) {
     if (!width || !height || width % 14u || height % 14u)
         throw std::invalid_argument("MoGe-2 encoder input must be divisible by 14");
+    const bool half_weight = model.uses_half_weights();
     const std::uint32_t token_width = width / 14u;
     const std::uint32_t token_height = height / 14u;
     const std::uint32_t patches = token_width * token_height;
@@ -71,18 +99,18 @@ EncoderOutput encode_vits(
                 weight(model, block_name(block, ".norm1.weight")),
                 weight(model, block_name(block, ".norm1.bias")),
                 tokens, embedding, 1.0e-6f);
-            operators.linear(
-                qkv, normalized,
-                weight(model, block_name(block, ".attn.qkv.weight")),
-                weight(model, block_name(block, ".attn.qkv.bias")),
-                tokens, embedding, embedding * 3u, false);
+            transformer_linear(
+                operators, model, qkv, normalized,
+                block_name(block, ".attn.qkv.weight"),
+                block_name(block, ".attn.qkv.bias"),
+                tokens, embedding, embedding * 3u);
             operators.attention_head64(
                 attended, qkv, tokens, config.heads, &scores);
-            operators.linear(
-                projected, attended,
-                weight(model, block_name(block, ".attn.proj.weight")),
-                weight(model, block_name(block, ".attn.proj.bias")),
-                tokens, embedding, embedding, false);
+            transformer_linear(
+                operators, model, projected, attended,
+                block_name(block, ".attn.proj.weight"),
+                block_name(block, ".attn.proj.bias"),
+                tokens, embedding, embedding);
             operators.add_scaled(
                 next, state, projected,
                 weight(model, block_name(block, ".ls1.gamma")),
@@ -93,16 +121,16 @@ EncoderOutput encode_vits(
                 weight(model, block_name(block, ".norm2.weight")),
                 weight(model, block_name(block, ".norm2.bias")),
                 tokens, embedding, 1.0e-6f);
-            operators.linear(
-                hidden, normalized,
-                weight(model, block_name(block, ".mlp.fc1.weight")),
-                weight(model, block_name(block, ".mlp.fc1.bias")),
+            transformer_linear(
+                operators, model, hidden, normalized,
+                block_name(block, ".mlp.fc1.weight"),
+                block_name(block, ".mlp.fc1.bias"),
                 tokens, embedding, embedding * 4u, true);
-            operators.linear(
-                projected, hidden,
-                weight(model, block_name(block, ".mlp.fc2.weight")),
-                weight(model, block_name(block, ".mlp.fc2.bias")),
-                tokens, embedding * 4u, embedding, false);
+            transformer_linear(
+                operators, model, projected, hidden,
+                block_name(block, ".mlp.fc2.weight"),
+                block_name(block, ".mlp.fc2.bias"),
+                tokens, embedding * 4u, embedding);
             operators.add_scaled(
                 next, state, projected,
                 weight(model, block_name(block, ".ls2.gamma")),
@@ -142,6 +170,7 @@ EncoderOutput encode_vits(
     context.copy(
         output.class_token, 0u, normalized, 0u,
         embedding * sizeof(float));
+    model.retain_transformer_precision(half_weight);
     return output;
 }
 

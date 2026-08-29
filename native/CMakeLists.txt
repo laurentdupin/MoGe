@@ -39,6 +39,13 @@ foreach(SHADER add_scaled add add_position bilinear_align_true
     replace_token qk_rope capture_concat add_uv exponential tokens_to_nchw)
   moge2_shader(${SHADER})
 endforeach()
+foreach(SHARED_SHADER quantize_rows_int8 linear_int8_tiled)
+  inferbridge_compile_native_support_shader(
+    NAME "${SHARED_SHADER}" PREFIX da3
+    GENERATED_DIR "${MOGE2_GENERATED_DIR}"
+    EMBED_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_binary.cmake"
+    OUT_VAR MOGE2_SHADER_HEADERS)
+endforeach()
 
 add_executable(moge2_gpu_encoder_probe
   tools/gpu_encoder_probe.cpp src/encoder_gpu.cpp src/model_config.cpp src/gpu_model.cpp

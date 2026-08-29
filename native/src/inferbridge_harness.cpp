@@ -1,6 +1,7 @@
 #include "inferbridge_harness.h"
 
 #include "external_gpu.h"
+#include "inferbridge/native_harness_precision.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -244,6 +245,13 @@ ibrh_result IBRH_CALL model_load(ibrh_runtime* runtime, std::size_t size,
     if (!model) return IBRH_ERROR_INTERNAL;
     model->runtime = runtime;
     const std::string parameters = text(request->parameters_json);
+    inferbridge::native::Precision precision;
+    try {
+        precision = inferbridge::native::precision_from_parameters_json(parameters);
+    } catch (const std::exception& error) {
+        return fail(runtime, IBRH_ERROR_INVALID_ARGUMENT, error.what());
+    }
+    const inferbridge::native::ScopedPrecisionRequest precision_scope(precision);
     (void)json_uint(parameters, "NumTokens", model->num_tokens);
     (void)json_uint(parameters, "BackgroundDistanceMetres",
         model->background_distance_metres);
@@ -417,12 +425,14 @@ ibrh_result IBRH_CALL submit(ibrh_model* model, std::size_t size,
     } else {
         job->request = {
             static_cast<std::uintptr_t>(input.resource.native_handle),
+            input.resource.auxiliary_handle,
             input.resource.width, input.resource.height, model->num_tokens,
             static_cast<float>(model->background_distance_metres),
             input.resource.pixel_format == IBRH_PIXEL_RGBA8,
             static_cast<std::uintptr_t>(input.synchronization.native_handle),
             input.synchronization.value,
             static_cast<std::uintptr_t>(target.resource.native_handle),
+            target.resource.auxiliary_handle,
             static_cast<std::uintptr_t>(target.synchronization.native_handle),
             target.synchronization.value};
     }

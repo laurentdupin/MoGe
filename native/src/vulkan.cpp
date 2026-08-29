@@ -396,8 +396,20 @@ VulkanContext::VulkanContext(
         1,
         &priority,
     };
+    VkPhysicalDeviceShaderIntegerDotProductFeatures integer_dot_features{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_FEATURES,
+    };
+    VkPhysicalDeviceShaderFloat16Int8Features float16_int8_features{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES,
+        &integer_dot_features,
+    };
+    VkPhysicalDevice16BitStorageFeatures storage16_features{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES,
+        &float16_int8_features,
+    };
     VkPhysicalDeviceTimelineSemaphoreFeatures timeline_features{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
+        &storage16_features,
     };
     VkPhysicalDeviceFeatures2 features2{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
@@ -406,6 +418,45 @@ VulkanContext::VulkanContext(
     vkGetPhysicalDeviceFeatures2(physical_device_, &features2);
     external_capabilities_.timeline_semaphore =
         timeline_features.timelineSemaphore == VK_TRUE;
+    float16_supported_ =
+        storage16_features.storageBuffer16BitAccess == VK_TRUE &&
+        float16_int8_features.shaderFloat16 == VK_TRUE;
+    VkPhysicalDeviceShaderIntegerDotProductProperties integer_dot_properties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_PROPERTIES,
+    };
+    VkPhysicalDeviceProperties2 integer_dot_properties2{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        &integer_dot_properties,
+    };
+    vkGetPhysicalDeviceProperties2(
+        physical_device_, &integer_dot_properties2);
+    packed_int8_dot_supported_ =
+        integer_dot_features.shaderIntegerDotProduct == VK_TRUE &&
+        integer_dot_properties
+            .integerDotProduct4x8BitPackedSignedAccelerated == VK_TRUE;
+    VkPhysicalDeviceShaderIntegerDotProductFeatures enabled_integer_dot{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_FEATURES,
+        nullptr,
+        packed_int8_dot_supported_ ? VK_TRUE : VK_FALSE,
+    };
+    VkPhysicalDeviceShaderFloat16Int8Features enabled_float16_int8{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES,
+        packed_int8_dot_supported_ ? &enabled_integer_dot : nullptr,
+        float16_supported_ ? VK_TRUE : VK_FALSE,
+        VK_FALSE,
+    };
+    VkPhysicalDevice16BitStorageFeatures enabled_storage16{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES,
+        (float16_supported_ || packed_int8_dot_supported_)
+            ? &enabled_float16_int8 : nullptr,
+        float16_supported_ ? VK_TRUE : VK_FALSE,
+        VK_FALSE,
+        VK_FALSE,
+        VK_FALSE,
+    };
+    timeline_features.pNext =
+        (float16_supported_ || packed_int8_dot_supported_)
+        ? static_cast<void*>(&enabled_storage16) : nullptr;
     const VkDeviceCreateInfo device_info{
         VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         &timeline_features,

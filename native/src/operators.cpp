@@ -1,4 +1,5 @@
 #include "operators.h"
+#include "inferbridge/native_harness_precision.h"
 
 #include "add_scaled_spv.h"
 #include "add_spv.h"
@@ -21,6 +22,8 @@
 #include "linear_vec8_spv.h"
 #include "linear_half_spv.h"
 #include "linear16_half_spv.h"
+#include "linear_int8_tiled_spv.h"
+#include "quantize_rows_int8_spv.h"
 #include "prepare_tokens_spv.h"
 #include "position_bicubic_spv.h"
 #include "project_tokens_spv.h"
@@ -80,6 +83,20 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
           da3_linear16_spv, da3_linear16_spv_size, 4, 12)),
       linear_vec8_(context.create_pipeline(
           da3_linear_vec8_spv, da3_linear_vec8_spv_size, 4, 12)),
+      quantize_rows_int8_(context.supports_packed_int8_dot() &&
+              inferbridge::native::requested_precision() ==
+                  inferbridge::native::Precision::int8
+          ? context.create_pipeline(
+              da3_quantize_rows_int8_spv,
+              da3_quantize_rows_int8_spv_size, 3, 4)
+          : VulkanPipeline{}),
+      linear_int8_tiled_(context.supports_packed_int8_dot() &&
+              inferbridge::native::requested_precision() ==
+                  inferbridge::native::Precision::int8
+          ? context.create_pipeline(
+              da3_linear_int8_tiled_spv,
+              da3_linear_int8_tiled_spv_size, 6, 28)
+          : VulkanPipeline{}),
       linear_half_(context.create_pipeline(
           da3_linear_half_spv, da3_linear_half_spv_size, 4, 12)),
       linear16_half_(context.create_pipeline(
@@ -203,6 +220,10 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
     linear_.set_debug_name("linear");
     linear16_.set_debug_name("linear16");
     linear_vec8_.set_debug_name("linear_vec8");
+    if (context.supports_packed_int8_dot()) {
+        quantize_rows_int8_.set_debug_name("quantize_rows_int8");
+        linear_int8_tiled_.set_debug_name("linear_int8_tiled");
+    }
     linear_half_.set_debug_name("linear_half");
     linear16_half_.set_debug_name("linear16_half");
     gelu_.set_debug_name("gelu");
@@ -240,6 +261,41 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
     add_uv_.set_debug_name("add_uv");
     exponential_.set_debug_name("exponential");
     tokens_to_nchw_.set_debug_name("tokens_to_nchw");
+}
+
+void VulkanOperators::linear_int8(
+    VulkanBuffer& output,
+    const VulkanBuffer& input,
+    const VulkanBuffer& packed_weight,
+    const VulkanBuffer& weight_scales,
+    const VulkanBuffer& bias,
+    std::uint32_t rows,
+    std::uint32_t input_columns,
+    std::uint32_t output_columns,
+    bool gelu) {
+    if (!context_.supports_packed_int8_dot() || input_columns % 4u != 0u)
+        throw std::runtime_error("accelerated packed INT8 linear is unavailable");
+    VulkanBuffer packed_input = context_.create_device_buffer(
+        std::uint64_t(rows) * (input_columns / 4u) * sizeof(std::uint32_t));
+    VulkanBuffer input_scales = context_.create_device_buffer(
+        std::uint64_t(rows) * sizeof(float));
+    context_.dispatch(
+        quantize_rows_int8_, {&input, &packed_input, &input_scales},
+        &input_columns, sizeof(input_columns), rows);
+    const std::uint32_t parameters[7] = {
+        rows, input_columns, output_columns, 0u, output_columns, 0u, 1u};
+    context_.dispatch(
+        linear_int8_tiled_,
+        {&output, &packed_input, &packed_weight, &input_scales,
+         &weight_scales, &bias},
+        parameters, sizeof(parameters),
+        divide_up(output_columns, 64u), divide_up(rows, 56u));
+    if (gelu) {
+        const std::uint32_t count = rows * output_columns;
+        context_.dispatch(
+            gelu_, {&output, &output}, &count, sizeof(count),
+            divide_up(count, 256u));
+    }
 }
 
 void VulkanOperators::linear(

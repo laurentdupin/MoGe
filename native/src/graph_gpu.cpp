@@ -23,6 +23,16 @@ const VulkanBuffer& tensor(const GpuModel& model, const std::string& name) {
     return model.tensor(name).buffer;
 }
 
+const VulkanBuffer& weight(const GpuModel& model, const std::string& name) {
+    const da3_native::GpuTensor& value = model.tensor(name);
+    return value.half_buffer.handle() != VK_NULL_HANDLE
+        ? value.half_buffer : value.buffer;
+}
+
+bool half_weight(const GpuModel& model, const std::string& name) {
+    return model.tensor(name).half_buffer.handle() != VK_NULL_HANDLE;
+}
+
 VulkanBuffer allocate(
     VulkanContext& context, std::uint32_t width, std::uint32_t height,
     std::uint32_t channels) {
@@ -37,9 +47,11 @@ VulkanBuffer conv(
     std::uint32_t input_channels, std::uint32_t output_channels,
     std::uint32_t kernel = 1u, std::uint32_t padding = 0u) {
     VulkanBuffer output = allocate(context, width, height, output_channels);
-    operators.conv2d(output, input, tensor(model, prefix + ".weight"),
+    const std::string weight_name = prefix + ".weight";
+    operators.conv2d(output, input, weight(model, weight_name),
         tensor(model, prefix + ".bias"), width, height, input_channels,
-        output_channels, kernel, 1u, padding, true);
+        output_channels, kernel, 1u, padding, true, false,
+        half_weight(model, weight_name));
     return output;
 }
 
@@ -80,9 +92,10 @@ VulkanBuffer resample(
         context, width * 2u, height * 2u, intermediate_channels);
     if (level < 3u) {
         operators.conv_transpose_nonoverlap(upsampled, input,
-            tensor(model, stack + ".resamplers." + std::to_string(level) + ".0.weight"),
+            weight(model, stack + ".resamplers." + std::to_string(level) + ".0.weight"),
             tensor(model, stack + ".resamplers." + std::to_string(level) + ".0.bias"),
-            width, height, channels[level], channels[level + 1u], 2u);
+            width, height, channels[level], channels[level + 1u], 2u,
+            half_weight(model, stack + ".resamplers." + std::to_string(level) + ".0.weight"));
     } else {
         moge.bilinear(upsampled, input, width, height,
             width * 2u, height * 2u, channels[level]);
@@ -187,14 +200,17 @@ VulkanBuffer metric_scale(
     VulkanBuffer c = context.create_device_buffer(embedding * sizeof(float));
     VulkanBuffer d = context.create_device_buffer(embedding * sizeof(float));
     VulkanBuffer result = context.create_device_buffer(sizeof(float));
-    operators.linear(a, class_token, tensor(model, "scale_head.0.weight"),
-        tensor(model, "scale_head.0.bias"), 1u, embedding, embedding, false);
+    operators.linear(a, class_token, weight(model, "scale_head.0.weight"),
+        tensor(model, "scale_head.0.bias"), 1u, embedding, embedding, false,
+        false, half_weight(model, "scale_head.0.weight"));
     operators.relu(b, a, embedding);
-    operators.linear(c, b, tensor(model, "scale_head.2.weight"),
-        tensor(model, "scale_head.2.bias"), 1u, embedding, embedding, false);
+    operators.linear(c, b, weight(model, "scale_head.2.weight"),
+        tensor(model, "scale_head.2.bias"), 1u, embedding, embedding, false,
+        false, half_weight(model, "scale_head.2.weight"));
     operators.relu(d, c, embedding);
-    operators.linear(result, d, tensor(model, "scale_head.4.weight"),
-        tensor(model, "scale_head.4.bias"), 1u, embedding, 1u, false);
+    operators.linear(result, d, weight(model, "scale_head.4.weight"),
+        tensor(model, "scale_head.4.bias"), 1u, embedding, 1u, false,
+        false, half_weight(model, "scale_head.4.weight"));
     operators.exponential(result, 1u);
     return result;
 }

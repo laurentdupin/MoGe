@@ -1,4 +1,5 @@
 #include "gpu_model.h"
+#include "inferbridge/native_harness_precision.h"
 
 #include <array>
 #include <cstring>
@@ -19,14 +20,17 @@ bool use_half_weight(std::string_view name) {
     if (!weight) {
         return false;
     }
-    if (name.rfind("depth_head.", 0) == 0) {
-        return true;
+    if (name.rfind("encoder.backbone.blocks.", 0) == 0) {
+        return name.find(".attn.") != std::string_view::npos ||
+            name.find(".mlp.") != std::string_view::npos;
     }
-    if (name.rfind("pretrained.blocks.", 0) != 0) {
-        return false;
-    }
-    return name.find(".attn.") != std::string_view::npos ||
-        name.find(".mlp.") != std::string_view::npos;
+    return name.rfind("neck.input_blocks.", 0) == 0 ||
+        name.rfind("points_head.input_blocks.", 0) == 0 ||
+        name.rfind("mask_head.input_blocks.", 0) == 0 ||
+        name.rfind("points_head.output_blocks.", 0) == 0 ||
+        name.rfind("mask_head.output_blocks.", 0) == 0 ||
+        name.rfind("scale_head.", 0) == 0 ||
+        name.find(".resamplers.") != std::string_view::npos;
 }
 
 std::uint16_t float_to_half(float input) {
@@ -82,6 +86,18 @@ std::uint16_t float_to_half(float input) {
 
 GpuModel::GpuModel(const SafeTensors& model, VulkanContext& context)
     : context_(context) {
+    const auto precision = inferbridge::native::require_supported_precision(
+        inferbridge::native::requested_precision(),
+        {context.supports_float16(), context.supports_packed_int8_dot()},
+        context.supports_float16()
+            ? inferbridge::native::Precision::fp16
+            : inferbridge::native::Precision::fp32);
+    const bool create_half_weights =
+        precision == inferbridge::native::Precision::fp16;
+    const bool create_int8_weights =
+        precision == inferbridge::native::Precision::int8;
+    uses_half_weights_ = create_half_weights;
+    uses_int8_weights_ = create_int8_weights;
     zero_bias_ = context_.create_device_buffer(sizeof(float));
     const float zero = 0.0f;
     context_.upload(zero_bias_, &zero, sizeof(zero));
@@ -99,12 +115,14 @@ GpuModel::GpuModel(const SafeTensors& model, VulkanContext& context)
         GpuTensor destination{
             context.create_device_buffer(bytes),
             {},
+            {},
+            {},
             source.dimensions,
             source.rank,
             source.elements,
         };
         context.upload(destination.buffer, source.data, bytes);
-        if (use_half_weight(name)) {
+        if (create_half_weights && use_half_weight(name)) {
             const auto* floats =
                 static_cast<const float*>(source.data);
             std::vector<std::uint32_t> packed(
@@ -125,6 +143,22 @@ GpuModel::GpuModel(const SafeTensors& model, VulkanContext& context)
                 packed.data(),
                 packed.size() * sizeof(std::uint32_t));
         }
+        if (create_int8_weights && use_half_weight(name) &&
+            name.rfind("encoder.backbone.blocks.", 0) == 0 &&
+            source.rank == 2 && source.dimensions[1] % 4u == 0u) {
+            const auto quantized = inferbridge::native::quantize_int8_rows(
+                static_cast<const float*>(source.data),
+                static_cast<std::size_t>(source.dimensions[0]),
+                static_cast<std::size_t>(source.dimensions[1]));
+            destination.int8_buffer = context.create_device_buffer(
+                quantized.packed.size() * sizeof(std::uint32_t));
+            destination.int8_scales = context.create_device_buffer(
+                quantized.scales.size() * sizeof(float));
+            context.upload(destination.int8_buffer, quantized.packed.data(),
+                quantized.packed.size() * sizeof(std::uint32_t));
+            context.upload(destination.int8_scales, quantized.scales.data(),
+                quantized.scales.size() * sizeof(float));
+        }
         if (!tensors_.emplace(name, std::move(destination)).second) {
             throw std::runtime_error(
                 "duplicate GPU tensor name: " + std::string(name));
@@ -144,7 +178,7 @@ const GpuTensor& GpuModel::tensor(std::string_view name) const {
 void GpuModel::retain_transformer_precision(bool half_weight) {
     for (auto& entry : tensors_) {
         const std::string_view name = entry.first;
-        if (name.rfind("pretrained.blocks.", 0) != 0 ||
+        if (name.rfind("encoder.backbone.blocks.", 0) != 0 ||
             name.size() < 7 ||
             name.substr(name.size() - 7) != ".weight" ||
             (name.find(".attn.") == std::string_view::npos &&
@@ -152,8 +186,15 @@ void GpuModel::retain_transformer_precision(bool half_weight) {
             continue;
         }
         GpuTensor& tensor = entry.second;
-        context_.discard(
-            half_weight ? tensor.buffer : tensor.half_buffer);
+        if (uses_int8_weights_) {
+            context_.discard(tensor.buffer);
+            context_.discard(tensor.half_buffer);
+        } else {
+            context_.discard(
+                half_weight ? tensor.buffer : tensor.half_buffer);
+            context_.discard(tensor.int8_buffer);
+            context_.discard(tensor.int8_scales);
+        }
     }
 }
 
@@ -168,6 +209,8 @@ void GpuModel::retain_dpt_precision(bool half_weight) {
         GpuTensor& tensor = entry.second;
         context_.discard(
             half_weight ? tensor.buffer : tensor.half_buffer);
+        context_.discard(tensor.int8_buffer);
+        context_.discard(tensor.int8_scales);
     }
 }
 

@@ -21,6 +21,16 @@ public:
         bool gelu,
         bool block16 = false,
         bool half_weight = false);
+    void linear_int8(
+        VulkanBuffer& output,
+        const VulkanBuffer& input,
+        const VulkanBuffer& packed_weight,
+        const VulkanBuffer& weight_scales,
+        const VulkanBuffer& bias,
+        std::uint32_t rows,
+        std::uint32_t input_columns,
+        std::uint32_t output_columns,
+        bool gelu = false);
 
     void layer_norm(
         VulkanBuffer& output,
@@ -154,6 +164,8 @@ private:
     VulkanPipeline linear_;
     VulkanPipeline linear16_;
     VulkanPipeline linear_vec8_;
+    VulkanPipeline quantize_rows_int8_;
+    VulkanPipeline linear_int8_tiled_;
     VulkanPipeline linear_half_;
     VulkanPipeline linear16_half_;
     VulkanPipeline gelu_;
