@@ -88,7 +88,18 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
                   inferbridge::native::Precision::int8
           ? context.create_pipeline(
               da3_quantize_rows_int8_spv,
-              da3_quantize_rows_int8_spv_size, 3, 4)
+                da3_quantize_rows_int8_spv_size,
+              {
+                                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                            },
+                            {
+                                VK_ACCESS_SHADER_READ_BIT,
+                                VK_ACCESS_SHADER_WRITE_BIT,
+                                VK_ACCESS_SHADER_WRITE_BIT,
+                            },
+                            4)
           : VulkanPipeline{}),
       linear_int8_tiled_(context.supports_packed_int8_dot() &&
               inferbridge::native::requested_precision() ==
