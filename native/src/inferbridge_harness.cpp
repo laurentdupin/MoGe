@@ -214,6 +214,7 @@ ibrh_result IBRH_CALL runtime_create(std::size_t size,
         !parse_luid(luid_text, runtime->adapter_luid))
         return IBRH_ERROR_INVALID_ARGUMENT;
     if (runtime->adapter_luid) {
+#if defined(MOGE2_WITH_VULKAN)
         bool found = false;
         for (std::uint32_t index = 0; index < 32u; ++index) {
             try {
@@ -226,6 +227,9 @@ ibrh_result IBRH_CALL runtime_create(std::size_t size,
             } catch (...) { if (index == 0u) break; }
         }
         if (!found) return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
+#else
+        return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
+#endif
     }
     *output = runtime.release();
     return IBRH_OK;
