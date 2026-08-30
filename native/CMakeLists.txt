@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(moge2_native VERSION 0.1.1 LANGUAGES C CXX)
 include("${CMAKE_CURRENT_LIST_DIR}/../../native_support/InferBridgeNativeHarnessSupport.cmake")
 link_libraries(InferBridge::NativeHarnessSupport)
+option(MOGE2_WITH_METAL "Build the Apple Metal/MPSGraph executor" ${APPLE})
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -62,11 +63,23 @@ set(MOGE2_NATIVE_SOURCES
   src/graph_gpu.cpp src/encoder_gpu.cpp src/model_config.cpp src/moge_operators.cpp
   src/gpu_model.cpp src/operators.cpp src/safetensors.cpp src/vulkan.cpp
   ${MOGE2_SHADER_HEADERS})
+if(MOGE2_WITH_METAL)
+  if(NOT APPLE)
+    message(FATAL_ERROR "MOGE2_WITH_METAL requires an Apple platform")
+  endif()
+  list(APPEND MOGE2_NATIVE_SOURCES src/metal_external_gpu.mm)
+endif()
 function(moge2_native_target TARGET_NAME HARNESS_ID)
   add_library(${TARGET_NAME} SHARED ${MOGE2_NATIVE_SOURCES})
   target_include_directories(${TARGET_NAME} PUBLIC include PRIVATE
     src "${MOGE2_GENERATED_DIR}")
   target_link_libraries(${TARGET_NAME} PRIVATE Vulkan::Vulkan)
+  if(MOGE2_WITH_METAL)
+    target_link_libraries(${TARGET_NAME} PRIVATE
+      "-framework Foundation" "-framework Metal"
+      "-framework MetalPerformanceShadersGraph")
+    target_compile_definitions(${TARGET_NAME} PRIVATE MOGE2_WITH_METAL=1)
+  endif()
   target_compile_definitions(${TARGET_NAME} PRIVATE
     INFERBRIDGE_HARNESS_BUILDING_LIBRARY MOGE2_BUILD_DLL
     "MOGE2_HARNESS_ID=\"${HARNESS_ID}\"")
@@ -79,6 +92,15 @@ function(moge2_native_target TARGET_NAME HARNESS_ID)
 endfunction()
 moge2_native_target(moge2_native "inferbridge.moge-2.native")
 moge2_native_target(metricanything_native "inferbridge.metricanything.native")
+
+include(CTest)
+if(BUILD_TESTING AND APPLE AND MOGE2_WITH_METAL)
+  add_executable(moge2_metal_full_graph tests/metal_full_graph.cpp)
+  target_include_directories(moge2_metal_full_graph PRIVATE include src)
+  target_link_libraries(moge2_metal_full_graph PRIVATE moge2_native)
+  add_test(NAME moge2_metal_full_graph COMMAND moge2_metal_full_graph)
+  set_tests_properties(moge2_metal_full_graph PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 
 if(WIN32)
   add_executable(moge2_d3d12_full_graph tests/d3d12_full_graph.cpp)

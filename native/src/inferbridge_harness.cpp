@@ -261,7 +261,12 @@ ibrh_result IBRH_CALL model_load(ibrh_runtime* runtime, std::size_t size,
         model->background_distance_metres > 1000u)
         return IBRH_ERROR_INVALID_ARGUMENT;
     try {
-        model->gpu = moge2_native::create_external_gpu(path, runtime->device_index);
+        model->gpu =
+#if defined(MOGE2_WITH_METAL)
+            moge2_native::create_metal_gpu(path);
+#else
+            moge2_native::create_external_gpu(path, runtime->device_index);
+#endif
         const auto caps = model->gpu->capabilities();
         if (runtime->adapter_luid && (!caps.available ||
             caps.adapter_luid != runtime->adapter_luid))

@@ -55,6 +55,8 @@ public:
 
 std::shared_ptr<ExternalGpu> create_external_gpu(
     const std::string& model_path, std::uint32_t device_index);
+std::shared_ptr<ExternalGpu> create_metal_gpu(
+    const std::string& model_path);
 ExternalGpuCapabilities probe_external_gpu(std::uint32_t device_index);
 
 }  // namespace moge2_native
