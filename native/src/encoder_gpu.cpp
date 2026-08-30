@@ -85,7 +85,7 @@ EncoderOutput encode_vits(
             std::uint64_t(patches) * config.decoder_embedding * sizeof(float)),
         context.create_device_buffer(embedding * sizeof(float))};
 
-    context.batch([&] {
+    const auto prepare = [&] {
         operators.prepare_tokens(
             state, image,
             weight(model, std::string(kPrefix) + "patch_embed.proj.weight"),
@@ -93,12 +93,8 @@ EncoderOutput encode_vits(
             weight(model, std::string(kPrefix) + "cls_token"),
             weight(model, std::string(kPrefix) + "pos_embed"),
             width, height, embedding);
-    });
-    // Keep each transformer block in a bounded submission.  A single command
-    // buffer for the complete encoder exceeds the Adreno watchdog window at
-    // MoGe's default token count and the driver kills the queue.
-    for (std::uint32_t block = 0; block < config.blocks; ++block) {
-        context.batch([&] {
+    };
+    const auto run_block = [&](std::uint32_t block) {
             operators.layer_norm(
                 normalized, state,
                 weight(model, block_name(block, ".norm1.weight")),
@@ -158,9 +154,8 @@ EncoderOutput encode_vits(
                     token_width, token_height, embedding,
                     config.decoder_embedding);
             }
-        });
-    }
-    context.batch([&] {
+    };
+    const auto finish = [&] {
         da3_native::VulkanBuffer accumulator = std::move(captured[0]);
         for (std::uint32_t capture = 1u;
             capture < config.capture_count; ++capture) {
@@ -173,7 +168,27 @@ EncoderOutput encode_vits(
                 patches * config.decoder_embedding);
             if (!last) accumulator = std::move(sum);
         }
+    };
+#if defined(__ANDROID__)
+    // Keep each transformer block in a bounded submission. A single command
+    // buffer for the complete encoder exceeds the Adreno watchdog window at
+    // MoGe's default token count and the driver kills the queue.
+    context.batch(prepare);
+    for (std::uint32_t block = 0; block < config.blocks; ++block) {
+        context.batch([&] { run_block(block); });
+    }
+    context.batch(finish);
+#else
+    // Desktop drivers do not have the Adreno watchdog constraint. One command
+    // buffer avoids a CPU/GPU round trip for every transformer block.
+    context.batch([&] {
+        prepare();
+        for (std::uint32_t block = 0; block < config.blocks; ++block) {
+            run_block(block);
+        }
+        finish();
     });
+#endif
     context.copy(
         output.class_token, 0u, normalized, 0u,
         embedding * sizeof(float));
