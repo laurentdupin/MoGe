@@ -3,6 +3,8 @@
 #include "encoder_gpu.h"
 #include "moge_operators.h"
 
+#include <inferbridge/native_harness_profile.h>
+
 #include <array>
 #include <stdexcept>
 #include <string>
@@ -225,8 +227,13 @@ DepthOutput infer_vits_normal(
     std::uint32_t output_height, float background_distance_metres,
     da3_native::VulkanImage* output_image) {
     if (!output_width || !output_height) throw std::invalid_argument("invalid output shape");
-    EncoderOutput encoded = encode_vits(context, model, operators, config,
-        std::move(normalized_encoder_image), encoder_width, encoder_height);
+    EncoderOutput encoded;
+    {
+        inferbridge::native::ProfileStage stage(
+            "INFERBRIDGE_MOGE_PROFILE", "moge", "encoder");
+        encoded = encode_vits(context, model, operators, config,
+            std::move(normalized_encoder_image), encoder_width, encoder_height);
+    }
     const auto channels = decoder_channels(config);
     const float aspect = float(output_width) / float(output_height);
     const std::uint32_t pixels = output_width * output_height;
@@ -240,49 +247,74 @@ DepthOutput infer_vits_normal(
     std::array<VulkanBuffer, 5> features;
     VulkanBuffer points_low;
     VulkanBuffer mask_low;
-    context.batch([&] {
-        features = neck(context, operators, moge, model, encoded.features,
-            encoded.token_width, encoded.token_height, aspect, channels,
-            config.neck_residual_blocks);
-    });
-    context.batch([&] {
-        points_low = head(context, operators, moge, model, features,
-            "points_head", encoded.token_width, encoded.token_height, 3u,
-            channels, config.head_residual_blocks);
-    });
-    context.batch([&] {
-        mask_low = head(context, operators, moge, model, features,
-            "mask_head", encoded.token_width, encoded.token_height, 1u,
-            channels, config.head_residual_blocks);
-    });
-    context.batch([&] {
-        VulkanBuffer points_resized = allocate(context, output_width, output_height, 3u);
-        VulkanBuffer mask_resized = allocate(context, output_width, output_height, 1u);
-        moge.bilinear(points_resized, points_low,
-            encoded.token_width * 16u, encoded.token_height * 16u,
-            output_width, output_height, 3u);
-        moge.bilinear(mask_resized, mask_low,
-            encoded.token_width * 16u, encoded.token_height * 16u,
-            output_width, output_height, 1u);
-        points = allocate(context, output_width, output_height, 3u);
-        mask = allocate(context, output_width, output_height, 1u);
-        moge.remap_points_mask(points, mask, points_resized, mask_resized, pixels);
-    });
-    context.batch([&] {
-        scale = metric_scale(context, operators, model, encoded.class_token,
-            config.embedding);
-        moge.solve_focal_shift(output.focal_shift, points, mask, output_width, output_height);
-    });
-    context.batch([&] {
-        if (output_image == nullptr) {
-            moge.final_depth(output.depth, points, mask, output.focal_shift,
-                scale, pixels, background_distance_metres);
-        } else {
-            moge.final_depth_image(*output_image, points, mask,
-                output.focal_shift, scale, output_width, output_height,
-                background_distance_metres);
-        }
-    });
+    {
+        inferbridge::native::ProfileStage stage(
+            "INFERBRIDGE_MOGE_PROFILE", "moge", "neck");
+        context.batch([&] {
+            features = neck(context, operators, moge, model, encoded.features,
+                encoded.token_width, encoded.token_height, aspect, channels,
+                config.neck_residual_blocks);
+        });
+    }
+    {
+        inferbridge::native::ProfileStage stage(
+            "INFERBRIDGE_MOGE_PROFILE", "moge", "points_head");
+        context.batch([&] {
+            points_low = head(context, operators, moge, model, features,
+                "points_head", encoded.token_width, encoded.token_height, 3u,
+                channels, config.head_residual_blocks);
+        });
+    }
+    {
+        inferbridge::native::ProfileStage stage(
+            "INFERBRIDGE_MOGE_PROFILE", "moge", "mask_head");
+        context.batch([&] {
+            mask_low = head(context, operators, moge, model, features,
+                "mask_head", encoded.token_width, encoded.token_height, 1u,
+                channels, config.head_residual_blocks);
+        });
+    }
+    {
+        inferbridge::native::ProfileStage stage(
+            "INFERBRIDGE_MOGE_PROFILE", "moge", "resize_remap");
+        context.batch([&] {
+            VulkanBuffer points_resized = allocate(context, output_width, output_height, 3u);
+            VulkanBuffer mask_resized = allocate(context, output_width, output_height, 1u);
+            moge.bilinear(points_resized, points_low,
+                encoded.token_width * 16u, encoded.token_height * 16u,
+                output_width, output_height, 3u);
+            moge.bilinear(mask_resized, mask_low,
+                encoded.token_width * 16u, encoded.token_height * 16u,
+                output_width, output_height, 1u);
+            points = allocate(context, output_width, output_height, 3u);
+            mask = allocate(context, output_width, output_height, 1u);
+            moge.remap_points_mask(points, mask, points_resized, mask_resized, pixels);
+        });
+    }
+    {
+        inferbridge::native::ProfileStage stage(
+            "INFERBRIDGE_MOGE_PROFILE", "moge", "metric_solve");
+        context.batch([&] {
+            scale = metric_scale(context, operators, model, encoded.class_token,
+                config.embedding);
+            moge.solve_focal_shift(
+                output.focal_shift, points, mask, output_width, output_height);
+        });
+    }
+    {
+        inferbridge::native::ProfileStage stage(
+            "INFERBRIDGE_MOGE_PROFILE", "moge", "final_depth");
+        context.batch([&] {
+            if (output_image == nullptr) {
+                moge.final_depth(output.depth, points, mask, output.focal_shift,
+                    scale, pixels, background_distance_metres);
+            } else {
+                moge.final_depth_image(*output_image, points, mask,
+                    output.focal_shift, scale, output_width, output_height,
+                    background_distance_metres);
+            }
+        });
+    }
     output.neck_features = std::move(features);
     output.points_low = std::move(points_low);
     output.mask_low = std::move(mask_low);
