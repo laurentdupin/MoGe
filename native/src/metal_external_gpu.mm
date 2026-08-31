@@ -476,13 +476,18 @@ public:
         graph_device_ = [MPSGraphDevice deviceWithMTLDevice:device_];
         if (device_ == nil || queue_ == nil || graph_device_ == nil)
             throw std::runtime_error("Metal is unavailable for MoGe-2");
+        inferbridge::native_harness::metal::label_queue(queue_, "MoGe-2");
         const auto precision = inferbridge::native::requested_precision();
         if (precision == inferbridge::native::Precision::int8)
             throw std::invalid_argument("MoGe-2 Metal does not support INT8");
         fp16_ = precision == inferbridge::native::Precision::fp16 ||
             precision == inferbridge::native::Precision::automatic;
         texture_pipeline_ = std::make_unique<
-            inferbridge::native_harness::metal::TexturePipeline>(device_);
+            inferbridge::native_harness::metal::TexturePipeline>(
+                device_, "MoGe-2");
+        auxiliary_pool_ = std::make_shared<
+            inferbridge::native_harness::metal::AuxiliaryTensorPool>(
+                device_, "MoGe-2");
         create_postprocess_pipelines();
     }
     ExternalGpuCapabilities capabilities() const override {
@@ -523,17 +528,24 @@ public:
         @autoreleasepool {
             auto prepared = texture_pipeline_->prepare(texture_request,
                 encoder_width, encoder_height, mean, deviation);
-            const std::size_t pixels = static_cast<std::size_t>(request.width) *
-                request.height;
-            id<MTLBuffer> points = [device_ newBufferWithLength:
-                pixels * 3u * sizeof(float) options:MTLResourceStorageModePrivate];
-            id<MTLBuffer> mask = [device_ newBufferWithLength:
-                pixels * sizeof(float) options:MTLResourceStorageModePrivate];
-            id<MTLBuffer> scale = [device_ newBufferWithLength:sizeof(float)
-                options:MTLResourceStorageModePrivate];
-            id<MTLBuffer> focal = [device_ newBufferWithLength:2u * sizeof(float)
-                options:MTLResourceStorageModePrivate];
-            if (!points || !mask || !scale || !focal) throw std::bad_alloc();
+            auto auxiliary = auxiliary_pool_->acquire({
+                {{1, 3, static_cast<NSInteger>(request.height),
+                    static_cast<NSInteger>(request.width)},
+                    MPSDataTypeFloat32, sizeof(float),
+                    MTLResourceStorageModePrivate, "Points Output"},
+                {{1, 1, static_cast<NSInteger>(request.height),
+                    static_cast<NSInteger>(request.width)},
+                    MPSDataTypeFloat32, sizeof(float),
+                    MTLResourceStorageModePrivate, "Mask Output"},
+                {{1}, MPSDataTypeFloat32, sizeof(float),
+                    MTLResourceStorageModePrivate, "Scale Output"},
+                {{2}, MPSDataTypeFloat32, sizeof(float),
+                    MTLResourceStorageModePrivate, "Focal Solve"}});
+            id<MTLBuffer> points = auxiliary->buffer(0);
+            id<MTLBuffer> mask = auxiliary->buffer(1);
+            id<MTLBuffer> scale = auxiliary->buffer(2);
+            id<MTLBuffer> focal = auxiliary->buffer(3);
+            prepared.retained_resources.push_back(auxiliary);
             const std::uint64_t key =
                 (static_cast<std::uint64_t>(token_width) << 48u) |
                 (static_cast<std::uint64_t>(token_height) << 32u) |
@@ -541,22 +553,8 @@ public:
                 request.height;
             Plan& plan = get_plan(key, encoder_width, encoder_height,
                 request.width, request.height);
-            prepared.input_data = [[MPSGraphTensorData alloc]
-                initWithMTLBuffer:prepared.input_buffer shape:shape({1, 3,
-                    static_cast<NSInteger>(encoder_height),
-                    static_cast<NSInteger>(encoder_width)})
-                dataType:MPSDataTypeFloat32];
             NSArray<MPSGraphTensorData*>* outputs = @[
-                [[MPSGraphTensorData alloc] initWithMTLBuffer:points
-                    shape:shape({1, 3, static_cast<NSInteger>(request.height),
-                        static_cast<NSInteger>(request.width)})
-                    dataType:MPSDataTypeFloat32],
-                [[MPSGraphTensorData alloc] initWithMTLBuffer:mask
-                    shape:shape({1, 1, static_cast<NSInteger>(request.height),
-                        static_cast<NSInteger>(request.width)})
-                    dataType:MPSDataTypeFloat32],
-                [[MPSGraphTensorData alloc] initWithMTLBuffer:scale
-                    shape:shape({1}) dataType:MPSDataTypeFloat32]];
+                auxiliary->data(0), auxiliary->data(1), auxiliary->data(2)];
             MPSGraphExecutableExecutionDescriptor* descriptor =
                 [MPSGraphExecutableExecutionDescriptor new];
             descriptor.waitUntilCompleted = NO;
@@ -567,7 +565,11 @@ public:
             if (results.count != 3u)
                 throw std::runtime_error("MoGe-2 Metal output binding failed");
             id<MTLCommandBuffer> command = [texture_pipeline_->queue() commandBuffer];
+            inferbridge::native_harness::metal::label_command(
+                command, "MoGe-2", "Geometry Postprocess");
             id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+            inferbridge::native_harness::metal::label_encoder(
+                encoder, "MoGe-2", "Geometry Postprocess");
             struct SolveParameters { std::uint32_t width, height; } solve{
                 request.width, request.height};
             [encoder setComputePipelineState:solve_pipeline_];
@@ -795,6 +797,8 @@ kernel void final_depth(
     std::atomic<std::uint64_t> download_bytes_{0u};
     std::unique_ptr<inferbridge::native_harness::metal::TexturePipeline>
         texture_pipeline_;
+    std::shared_ptr<inferbridge::native_harness::metal::AuxiliaryTensorPool>
+        auxiliary_pool_;
     id<MTLComputePipelineState> solve_pipeline_ = nil;
     id<MTLComputePipelineState> final_pipeline_ = nil;
 };
