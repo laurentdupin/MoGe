@@ -60,7 +60,7 @@ thread_local std::string g_error;
 #define MOGE2_HARNESS_ID "inferbridge.moge-2.native"
 #endif
 constexpr char kHarnessId[] = MOGE2_HARNESS_ID;
-constexpr char kHarnessVersion[] = "0.1.1";
+constexpr char kHarnessVersion[] = "0.2.0";
 
 std::string text(ibrh_string_view value) {
     return value.data && value.size ? std::string(value.data, value.size) :
@@ -190,6 +190,12 @@ ibrh_result IBRH_CALL query_capabilities(
     output->input_domain_mask |= 1ull << IBRH_RESOURCE_DOMAIN_D3D12;
     output->output_domain_mask |= 1ull << IBRH_RESOURCE_DOMAIN_D3D12;
     output->synchronization_mask = 1ull << IBRH_SYNC_D3D12_FENCE;
+#elif defined(MOGE2_WITH_METAL) && defined(__APPLE__)
+    output->flags |= IBRH_CAP_GPU_RESOURCES |
+        IBRH_CAP_EXTERNAL_SYNCHRONIZATION | IBRH_CAP_GPU_RESIDENT_OUTPUT;
+    output->input_domain_mask |= 1ull << IBRH_RESOURCE_DOMAIN_METAL;
+    output->output_domain_mask |= 1ull << IBRH_RESOURCE_DOMAIN_METAL;
+    output->synchronization_mask = 1ull << IBRH_SYNC_METAL_SHARED_EVENT;
 #endif
     output->maximum_inputs = 1u;
     output->maximum_outputs = 1u;
@@ -210,11 +216,16 @@ ibrh_result IBRH_CALL runtime_create(std::size_t size,
     const std::string device = text(request->requested_device_json);
     (void)json_uint(device, "index", runtime->device_index);
     std::string luid_text;
-    if (json_string(device, "luid", luid_text) &&
-        !parse_luid(luid_text, runtime->adapter_luid))
-        return IBRH_ERROR_INVALID_ARGUMENT;
+    if (json_string(device, "luid", luid_text)) {
+#if defined(_WIN32)
+        if (!parse_luid(luid_text, runtime->adapter_luid))
+            return IBRH_ERROR_INVALID_ARGUMENT;
+#else
+        runtime->adapter_luid = 0u;
+#endif
+    }
     if (runtime->adapter_luid) {
-#if defined(MOGE2_WITH_VULKAN)
+#if defined(MOGE2_WITH_VULKAN) && defined(_WIN32)
         bool found = false;
         for (std::uint32_t index = 0; index < 32u; ++index) {
             try {
@@ -227,7 +238,7 @@ ibrh_result IBRH_CALL runtime_create(std::size_t size,
             } catch (...) { if (index == 0u) break; }
         }
         if (!found) return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
-#else
+#elif !defined(MOGE2_WITH_METAL)
         return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
 #endif
     }
@@ -272,9 +283,13 @@ ibrh_result IBRH_CALL model_load(ibrh_runtime* runtime, std::size_t size,
             moge2_native::create_external_gpu(path, runtime->device_index);
 #endif
         const auto caps = model->gpu->capabilities();
+#if defined(_WIN32)
         if (runtime->adapter_luid && (!caps.available ||
             caps.adapter_luid != runtime->adapter_luid))
             return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
+#else
+        (void)caps;
+#endif
         model->worker = std::thread(worker_loop, model.get());
     } catch (const std::exception& exception) {
         return fail(runtime, IBRH_ERROR_UNSUPPORTED_CAPABILITY, exception.what());
@@ -355,19 +370,42 @@ ibrh_result IBRH_CALL model_plan_outputs(const ibrh_model* model,
 
 bool valid_binding(const ibrh_transfer_binding& input,
     const ibrh_transfer_binding& output) {
-    return input.resource.domain == IBRH_RESOURCE_DOMAIN_D3D12 &&
-        output.resource.domain == IBRH_RESOURCE_DOMAIN_D3D12 &&
+#if defined(_WIN32)
+    constexpr uint32_t domain = IBRH_RESOURCE_DOMAIN_D3D12;
+    constexpr uint32_t texture_handle = IBRH_NATIVE_HANDLE_WIN32_SHARED;
+    constexpr uint32_t sync_kind = IBRH_SYNC_D3D12_FENCE;
+    constexpr uint32_t sync_handle = IBRH_NATIVE_HANDLE_WIN32_SHARED;
+    const bool wait_valid = input.synchronization.kind == sync_kind &&
+        input.synchronization.operation == IBRH_SYNC_WAIT;
+#elif defined(MOGE2_WITH_METAL) && defined(__APPLE__)
+    constexpr uint32_t domain = IBRH_RESOURCE_DOMAIN_METAL;
+    constexpr uint32_t texture_handle = IBRH_NATIVE_HANDLE_METAL_TEXTURE;
+    constexpr uint32_t sync_kind = IBRH_SYNC_METAL_SHARED_EVENT;
+    constexpr uint32_t sync_handle = IBRH_NATIVE_HANDLE_METAL_SHARED_EVENT;
+    const bool wait_valid =
+        (input.synchronization.kind == IBRH_SYNC_NONE &&
+         input.synchronization.native_handle == 0u) ||
+        (input.synchronization.kind == sync_kind &&
+         input.synchronization.operation == IBRH_SYNC_WAIT &&
+         input.synchronization.native_handle_type == sync_handle &&
+         input.synchronization.native_handle != 0u);
+#else
+    return false;
+#endif
+    return input.resource.domain == domain &&
+        output.resource.domain == domain &&
         input.resource.kind == IBRH_RESOURCE_KIND_IMAGE_2D &&
         output.resource.kind == IBRH_RESOURCE_KIND_IMAGE_2D &&
         (input.resource.pixel_format == IBRH_PIXEL_BGRA8 ||
          input.resource.pixel_format == IBRH_PIXEL_RGBA8) &&
         output.resource.pixel_format == IBRH_PIXEL_DEPTH_METRIC_FLOAT32 &&
-        input.resource.native_handle_type == IBRH_NATIVE_HANDLE_WIN32_SHARED &&
-        output.resource.native_handle_type == IBRH_NATIVE_HANDLE_WIN32_SHARED &&
-        input.synchronization.kind == IBRH_SYNC_D3D12_FENCE &&
-        input.synchronization.operation == IBRH_SYNC_WAIT &&
-        output.synchronization.kind == IBRH_SYNC_D3D12_FENCE &&
+        input.resource.native_handle_type == texture_handle &&
+        output.resource.native_handle_type == texture_handle &&
+        wait_valid &&
+        output.synchronization.kind == sync_kind &&
         output.synchronization.operation == IBRH_SYNC_SIGNAL &&
+        output.synchronization.native_handle_type == sync_handle &&
+        output.synchronization.native_handle != 0u &&
         input.resource.width == output.resource.width &&
         input.resource.height == output.resource.height;
 }

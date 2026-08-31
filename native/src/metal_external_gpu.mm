@@ -3,6 +3,7 @@
 #include "safetensors.h"
 
 #include "inferbridge/native_harness_host_image.h"
+#include "inferbridge/native_harness_metal_texture.h"
 #include "inferbridge/native_harness_precision.h"
 
 #import <Foundation/Foundation.h>
@@ -404,6 +405,21 @@ struct Plan {
     MPSGraphExecutable* executable = nil;
 };
 
+class MetalExternalJob final : public ExternalJob {
+public:
+    explicit MetalExternalJob(
+        std::shared_ptr<inferbridge::native_harness::metal::Submission> value)
+        : submission_(std::move(value)) {}
+    ExternalJobState state() const override {
+        if (submission_->cancelled()) return ExternalJobState::cancelled;
+        return submission_->complete() ? ExternalJobState::complete :
+            ExternalJobState::running;
+    }
+    void cancel() override { submission_->cancel(); }
+private:
+    std::shared_ptr<inferbridge::native_harness::metal::Submission> submission_;
+};
+
 std::array<float, 2> solve_focal_shift(
     const float* points, const float* mask, std::uint32_t width,
     std::uint32_t height) {
@@ -465,11 +481,126 @@ public:
             throw std::invalid_argument("MoGe-2 Metal does not support INT8");
         fp16_ = precision == inferbridge::native::Precision::fp16 ||
             precision == inferbridge::native::Precision::automatic;
+        texture_pipeline_ = std::make_unique<
+            inferbridge::native_harness::metal::TexturePipeline>(device_);
+        create_postprocess_pipelines();
     }
-    ExternalGpuCapabilities capabilities() const override { return {}; }
+    ExternalGpuCapabilities capabilities() const override {
+        return {true, 0u, 3u};
+    }
     std::shared_ptr<ExternalJob> submit_texture(
-        const ExternalTextureRequest&) override {
-        throw std::runtime_error("MoGe-2 Metal texture binding is not implemented");
+        const ExternalTextureRequest& request) override {
+        if (!request.input_texture || !request.output_texture ||
+            !request.signal_fence || !request.signal_value ||
+            !request.width || !request.height || request.num_tokens < 16u)
+            throw std::invalid_argument("invalid MoGe-2 Metal texture request");
+        const float aspect = static_cast<float>(request.width) / request.height;
+        const std::uint32_t token_height = std::max(1u,
+            static_cast<std::uint32_t>(std::nearbyint(
+                std::sqrt(request.num_tokens / aspect))));
+        const std::uint32_t token_width = std::max(1u,
+            static_cast<std::uint32_t>(std::nearbyint(
+                std::sqrt(request.num_tokens * aspect))));
+        const std::uint32_t encoder_width = token_width * 14u;
+        const std::uint32_t encoder_height = token_height * 14u;
+        constexpr float mean[3] = {0.485f, 0.456f, 0.406f};
+        constexpr float deviation[3] = {0.229f, 0.224f, 0.225f};
+        inferbridge::native_harness::metal::Request texture_request;
+        texture_request.input_texture = request.input_texture;
+        texture_request.input_width = request.width;
+        texture_request.input_height = request.height;
+        texture_request.input_format = request.rgba ?
+            inferbridge::native_harness::metal::PixelFormat::rgba8 :
+            inferbridge::native_harness::metal::PixelFormat::bgra8;
+        texture_request.wait_event = request.wait_fence;
+        texture_request.wait_value = request.wait_value;
+        texture_request.output_texture = request.output_texture;
+        texture_request.output_width = request.width;
+        texture_request.output_height = request.height;
+        texture_request.signal_event = request.signal_fence;
+        texture_request.signal_value = request.signal_value;
+        std::lock_guard<std::mutex> lock(mutex_);
+        @autoreleasepool {
+            auto prepared = texture_pipeline_->prepare(texture_request,
+                encoder_width, encoder_height, mean, deviation);
+            const std::size_t pixels = static_cast<std::size_t>(request.width) *
+                request.height;
+            id<MTLBuffer> points = [device_ newBufferWithLength:
+                pixels * 3u * sizeof(float) options:MTLResourceStorageModePrivate];
+            id<MTLBuffer> mask = [device_ newBufferWithLength:
+                pixels * sizeof(float) options:MTLResourceStorageModePrivate];
+            id<MTLBuffer> scale = [device_ newBufferWithLength:sizeof(float)
+                options:MTLResourceStorageModePrivate];
+            id<MTLBuffer> focal = [device_ newBufferWithLength:2u * sizeof(float)
+                options:MTLResourceStorageModePrivate];
+            if (!points || !mask || !scale || !focal) throw std::bad_alloc();
+            const std::uint64_t key =
+                (static_cast<std::uint64_t>(token_width) << 48u) |
+                (static_cast<std::uint64_t>(token_height) << 32u) |
+                (static_cast<std::uint64_t>(request.width) << 16u) |
+                request.height;
+            Plan& plan = get_plan(key, encoder_width, encoder_height,
+                request.width, request.height);
+            prepared.input_data = [[MPSGraphTensorData alloc]
+                initWithMTLBuffer:prepared.input_buffer shape:shape({1, 3,
+                    static_cast<NSInteger>(encoder_height),
+                    static_cast<NSInteger>(encoder_width)})
+                dataType:MPSDataTypeFloat32];
+            NSArray<MPSGraphTensorData*>* outputs = @[
+                [[MPSGraphTensorData alloc] initWithMTLBuffer:points
+                    shape:shape({1, 3, static_cast<NSInteger>(request.height),
+                        static_cast<NSInteger>(request.width)})
+                    dataType:MPSDataTypeFloat32],
+                [[MPSGraphTensorData alloc] initWithMTLBuffer:mask
+                    shape:shape({1, 1, static_cast<NSInteger>(request.height),
+                        static_cast<NSInteger>(request.width)})
+                    dataType:MPSDataTypeFloat32],
+                [[MPSGraphTensorData alloc] initWithMTLBuffer:scale
+                    shape:shape({1}) dataType:MPSDataTypeFloat32]];
+            MPSGraphExecutableExecutionDescriptor* descriptor =
+                [MPSGraphExecutableExecutionDescriptor new];
+            descriptor.waitUntilCompleted = NO;
+            NSArray<MPSGraphTensorData*>* results = [plan.executable
+                runAsyncWithMTLCommandQueue:texture_pipeline_->queue()
+                inputsArray:@[prepared.input_data] resultsArray:outputs
+                executionDescriptor:descriptor];
+            if (results.count != 3u)
+                throw std::runtime_error("MoGe-2 Metal output binding failed");
+            id<MTLCommandBuffer> command = [texture_pipeline_->queue() commandBuffer];
+            id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+            struct SolveParameters { std::uint32_t width, height; } solve{
+                request.width, request.height};
+            [encoder setComputePipelineState:solve_pipeline_];
+            [encoder setBuffer:focal offset:0 atIndex:0];
+            [encoder setBuffer:points offset:0 atIndex:1];
+            [encoder setBuffer:mask offset:0 atIndex:2];
+            [encoder setBytes:&solve length:sizeof(solve) atIndex:3];
+            [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+            struct FinalParameters {
+                std::uint32_t width, height; float background;
+            } final{request.width, request.height,
+                request.background_distance_metres};
+            [encoder setComputePipelineState:final_pipeline_];
+            [encoder setTexture:prepared.output_texture atIndex:0];
+            [encoder setBuffer:points offset:0 atIndex:0];
+            [encoder setBuffer:mask offset:0 atIndex:1];
+            [encoder setBuffer:focal offset:0 atIndex:2];
+            [encoder setBuffer:scale offset:0 atIndex:3];
+            [encoder setBytes:&final length:sizeof(final) atIndex:4];
+            const NSUInteger tx = final_pipeline_.threadExecutionWidth;
+            const NSUInteger ty = std::max<NSUInteger>(1,
+                final_pipeline_.maxTotalThreadsPerThreadgroup / tx);
+            [encoder dispatchThreads:MTLSizeMake(request.width, request.height, 1)
+                threadsPerThreadgroup:MTLSizeMake(tx, ty, 1)];
+            [encoder endEncoding];
+            [command encodeSignalEvent:prepared.signal_event
+                value:prepared.signal_value];
+            [command commit];
+            return std::make_shared<MetalExternalJob>(
+                std::make_shared<inferbridge::native_harness::metal::Submission>(
+                    prepared, command));
+        }
     }
     void infer_host(const std::uint8_t* pixels, std::uint32_t width,
         std::uint32_t height, std::size_t row_stride, bool rgba,
@@ -536,6 +667,99 @@ public:
     }
 
 private:
+    void create_postprocess_pipelines() {
+        static constexpr char source_text[] = R"METAL(
+#include <metal_stdlib>
+using namespace metal;
+struct SolveParameters { uint width, height; };
+kernel void solve_focal_shift(
+    device float* result [[buffer(0)]],
+    device const float* points [[buffer(1)]],
+    device const float* mask [[buffer(2)]],
+    constant SolveParameters& p [[buffer(3)]],
+    uint lane [[thread_index_in_threadgroup]]) {
+    threadgroup float r00[256], r01[256], r11[256], rb0[256], rb1[256];
+    threadgroup float state_f, state_s;
+    if (lane == 0) { state_f = 1.0f; state_s = 0.0f; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint pixels = p.width * p.height;
+    float aspect = float(p.width) / float(p.height);
+    float span_x = aspect / sqrt(1.0f + aspect * aspect);
+    float span_y = 1.0f / sqrt(1.0f + aspect * aspect);
+    for (uint iteration = 0; iteration < 20; ++iteration) {
+        float a00=0, a01=0, a11=0, b0=0, b1=0;
+        for (uint sample=lane; sample<4096; sample+=256) {
+            uint ox=sample&63u, oy=sample>>6u;
+            uint x=min((ox*p.width)/64u,p.width-1u);
+            uint y=min((oy*p.height)/64u,p.height-1u);
+            uint index=y*p.width+x;
+            if (mask[index] <= 0.5f) continue;
+            float denominator=points[2u*pixels+index]+state_s;
+            if (abs(denominator)<1.0e-5f) continue;
+            float px=points[index]/denominator;
+            float py=points[pixels+index]/denominator;
+            float u=((2.0f*float(x)+1.0f)/float(p.width)-1.0f)*span_x;
+            float v=((2.0f*float(y)+1.0f)/float(p.height)-1.0f)*span_y;
+            float ex=state_f*px-u, ey=state_f*py-v;
+            float jsx=-state_f*px/denominator, jsy=-state_f*py/denominator;
+            a00+=px*px+py*py; a01+=px*jsx+py*jsy;
+            a11+=jsx*jsx+jsy*jsy; b0+=px*ex+py*ey;
+            b1+=jsx*ex+jsy*ey;
+        }
+        r00[lane]=a00; r01[lane]=a01; r11[lane]=a11;
+        rb0[lane]=b0; rb1[lane]=b1;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint stride=128; stride; stride>>=1) {
+            if (lane<stride) { r00[lane]+=r00[lane+stride];
+                r01[lane]+=r01[lane+stride]; r11[lane]+=r11[lane+stride];
+                rb0[lane]+=rb0[lane+stride]; rb1[lane]+=rb1[lane+stride]; }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+        if (lane==0) {
+            float m00=r00[0]+1.0e-4f, m11=r11[0]+1.0e-4f;
+            float determinant=m00*m11-r01[0]*r01[0];
+            if (abs(determinant)>1.0e-12f) {
+                float df=(-m11*rb0[0]+r01[0]*rb1[0])/determinant;
+                float ds=(r01[0]*rb0[0]-m00*rb1[0])/determinant;
+                state_f=max(1.0e-4f,state_f+clamp(df,-0.5f,0.5f));
+                state_s+=clamp(ds,-1.0f,1.0f);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (lane==0) { result[0]=state_f; result[1]=state_s; }
+}
+struct FinalParameters { uint width, height; float background; };
+kernel void final_depth(
+    texture2d<float, access::write> output [[texture(0)]],
+    device const float* points [[buffer(0)]],
+    device const float* mask [[buffer(1)]],
+    device const float* focal [[buffer(2)]],
+    device const float* scale [[buffer(3)]],
+    constant FinalParameters& p [[buffer(4)]],
+    uint2 position [[thread_position_in_grid]]) {
+    if (position.x>=p.width || position.y>=p.height) return;
+    uint index=position.y*p.width+position.x, pixels=p.width*p.height;
+    float value=points[2u*pixels+index]+focal[1];
+    float depth=mask[index]>0.5f && value>0.0f ? value*scale[0] : p.background;
+    output.write(float4(depth),position);
+}
+)METAL";
+        NSError* error = nil;
+        id<MTLLibrary> library = [device_ newLibraryWithSource:
+            [NSString stringWithUTF8String:source_text] options:nil error:&error];
+        if (!library)
+            throw std::runtime_error(error.localizedDescription.UTF8String ?:
+                "could not compile MoGe-2 Metal postprocessing");
+        solve_pipeline_ = [device_ newComputePipelineStateWithFunction:
+            [library newFunctionWithName:@"solve_focal_shift"] error:&error];
+        final_pipeline_ = [device_ newComputePipelineStateWithFunction:
+            [library newFunctionWithName:@"final_depth"] error:&error];
+        if (!solve_pipeline_ || !final_pipeline_)
+            throw std::runtime_error(error.localizedDescription.UTF8String ?:
+                "could not create MoGe-2 Metal postprocessing pipelines");
+    }
+
     Plan& get_plan(std::uint64_t key, int encoder_width, int encoder_height,
                    int output_width, int output_height) {
         auto found = plans_.find(key);
@@ -569,6 +793,10 @@ private:
     std::mutex mutex_;
     std::atomic<std::uint64_t> upload_bytes_{0u};
     std::atomic<std::uint64_t> download_bytes_{0u};
+    std::unique_ptr<inferbridge::native_harness::metal::TexturePipeline>
+        texture_pipeline_;
+    id<MTLComputePipelineState> solve_pipeline_ = nil;
+    id<MTLComputePipelineState> final_pipeline_ = nil;
 };
 
 }  // namespace

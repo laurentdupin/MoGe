@@ -74,6 +74,8 @@ if(MOGE2_WITH_METAL)
     message(FATAL_ERROR "MOGE2_WITH_METAL requires an Apple platform")
   endif()
   list(APPEND MOGE2_NATIVE_SOURCES src/metal_external_gpu.mm)
+  set_source_files_properties(src/metal_external_gpu.mm PROPERTIES
+    COMPILE_OPTIONS "-fobjc-arc")
 endif()
 function(moge2_native_target TARGET_NAME HARNESS_ID)
   add_library(${TARGET_NAME} SHARED ${MOGE2_NATIVE_SOURCES})
