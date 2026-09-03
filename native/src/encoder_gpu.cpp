@@ -1,4 +1,5 @@
 #include "encoder_gpu.h"
+#include "inferbridge/native_harness_environment.h"
 #include "inferbridge/native_harness_precision.h"
 
 #include <stdexcept>
@@ -69,8 +70,13 @@ EncoderOutput encode_vits(
     da3_native::VulkanBuffer normalized = context.create_device_buffer(bytes);
     da3_native::VulkanBuffer attended = context.create_device_buffer(bytes);
     da3_native::VulkanBuffer projected = context.create_device_buffer(bytes);
-    da3_native::VulkanBuffer qkv = context.create_device_buffer(bytes * 3u);
     da3_native::VulkanBuffer hidden = context.create_device_buffer(bytes * 4u);
+    const bool alias_qkv =
+        inferbridge::native_harness::scratch_aliasing_enabled();
+    da3_native::VulkanBuffer qkv_storage = alias_qkv
+        ? da3_native::VulkanBuffer{}
+        : context.create_device_buffer(bytes * 3u);
+    da3_native::VulkanBuffer& qkv = alias_qkv ? hidden : qkv_storage;
     da3_native::VulkanBuffer scores = context.create_device_buffer(
         std::uint64_t(config.heads) * tokens * tokens * sizeof(float));
     std::vector<da3_native::VulkanBuffer> captured;
