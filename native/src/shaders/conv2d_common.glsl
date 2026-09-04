@@ -40,6 +40,9 @@ layout(push_constant) uniform Parameters {
     uint has_bias;
     uint batches;
     uint output_channel_blocks;
+#if defined(REPLICATE_PADDING)
+    uint input_relu;
+#endif
 } parameters;
 
 void main() {
@@ -97,8 +100,12 @@ void main() {
                         uint(input_y)) *
                         parameters.input_width +
                     uint(input_x);
-                const float input_value =
-                    input_buffer.data[input_index];
+                float input_value = input_buffer.data[input_index];
+#if defined(REPLICATE_PADDING)
+                if (parameters.input_relu != 0) {
+                    input_value = max(input_value, 0.0);
+                }
+#endif
                 for (uint output_offset = 0;
                      output_offset < OUTPUT_CHANNEL_BLOCK;
                      ++output_offset) {

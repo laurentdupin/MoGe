@@ -189,7 +189,9 @@ private:
     VulkanPipeline conv2d_half_;
     VulkanPipeline conv2d8_half_;
     VulkanPipeline conv_transpose_nonoverlap_;
+    VulkanPipeline conv_transpose_nonoverlap4_;
     VulkanPipeline conv_transpose_nonoverlap_half_;
+    VulkanPipeline conv_transpose_nonoverlap4_half_;
     VulkanPipeline bilinear_align_true_;
     VulkanPipeline bilinear_align_true_image_;
     VulkanPipeline relu_;

@@ -3,6 +3,7 @@
 #include "bilinear_align_false_spv.h"
 #include "concat_uv_spv.h"
 #include "conv2d_replicate_spv.h"
+#include "conv2d_replicate_tiled16x8_spv.h"
 #include "final_depth_spv.h"
 #include "final_depth_image_spv.h"
 #include "remap_points_mask_spv.h"
@@ -20,7 +21,10 @@ std::uint32_t divide_up(std::uint32_t value, std::uint32_t divisor) {
 MoGeOperators::MoGeOperators(da3_native::VulkanContext& context)
     : context_(context),
       conv2d_replicate_(context.create_pipeline(
-          da3_conv2d_replicate_spv, da3_conv2d_replicate_spv_size, 4, 48)),
+          da3_conv2d_replicate_spv, da3_conv2d_replicate_spv_size, 4, 52)),
+      conv2d_replicate_tiled16x8_(context.create_pipeline(
+          da3_conv2d_replicate_tiled16x8_spv,
+          da3_conv2d_replicate_tiled16x8_spv_size, 4, 52)),
       bilinear_(context.create_pipeline(
           da3_bilinear_align_false_spv, da3_bilinear_align_false_spv_size, 2, 24)),
       concat_uv_(context.create_pipeline(
@@ -42,6 +46,8 @@ MoGeOperators::MoGeOperators(da3_native::VulkanContext& context)
            VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
            VK_ACCESS_SHADER_READ_BIT}, 12)) {
     conv2d_replicate_.set_debug_name("moge2_conv2d_replicate");
+    conv2d_replicate_tiled16x8_.set_debug_name(
+        "moge2_conv2d_replicate_tiled16x8");
     bilinear_.set_debug_name("moge2_bilinear_align_false");
     concat_uv_.set_debug_name("moge2_concat_uv");
     remap_points_mask_.set_debug_name("moge2_remap_points_mask");
@@ -76,18 +82,24 @@ void MoGeOperators::conv2d_replicate(
     const da3_native::VulkanBuffer& bias,
     std::uint32_t width, std::uint32_t height,
     std::uint32_t input_channels, std::uint32_t output_channels,
-    std::uint32_t kernel, std::uint32_t padding) {
+    std::uint32_t kernel, std::uint32_t padding, bool input_relu) {
     struct Parameters {
         std::uint32_t input_width, input_height, input_channels;
         std::uint32_t output_width, output_height, output_channels;
         std::uint32_t kernel, stride;
         std::int32_t padding;
         std::uint32_t has_bias, batches, output_channel_blocks;
-    } parameters{width, height, input_channels, width, height,
+        std::uint32_t input_relu;
+    };
+    const bool tiled = kernel == 3u && padding == 1u;
+    const Parameters parameters{width, height, input_channels, width, height,
         output_channels, kernel, 1u, static_cast<std::int32_t>(padding),
-        1u, 1u, divide_up(output_channels, 4u)};
-    context_.dispatch(conv2d_replicate_, {&output, &input, &weight, &bias},
-        &parameters, sizeof(parameters), divide_up(width, 8u),
+        1u, 1u, divide_up(output_channels, tiled ? 8u : 4u),
+        input_relu ? 1u : 0u};
+    context_.dispatch(
+        tiled ? conv2d_replicate_tiled16x8_ : conv2d_replicate_,
+        {&output, &input, &weight, &bias},
+        &parameters, sizeof(parameters), divide_up(width, tiled ? 16u : 8u),
         divide_up(height, 8u), parameters.output_channel_blocks);
 }
 

@@ -33,10 +33,10 @@ if(MOGE2_WITH_VULKAN)
   endfunction()
   foreach(SHADER add_scaled add add_position bilinear_align_true
     bilinear_align_true_image bilinear_align_false bmm bmm_score_half bmm_value_half conv2d conv2d8
-    conv2d_half conv2d8_half conv_transpose_nonoverlap
-    conv2d_replicate concat_uv remap_points_mask solve_focal_shift final_depth
+    conv2d_half conv2d8_half conv_transpose_nonoverlap conv_transpose_nonoverlap4
+    conv2d_replicate conv2d_replicate_tiled16x8 concat_uv remap_points_mask solve_focal_shift final_depth
     final_depth_image preprocess_moge_texture
-    conv_transpose_nonoverlap_half elementwise gelu layer_norm linear linear16
+    conv_transpose_nonoverlap_half conv_transpose_nonoverlap4_half elementwise gelu layer_norm linear linear16
     linear_vec8 linear_half linear16_half prepare_tokens position_bicubic
     project_tokens project_tokens_half relu softmax_lastdim softmax_lastdim_half
     replace_token qk_rope capture_concat add_uv exponential tokens_to_nchw)

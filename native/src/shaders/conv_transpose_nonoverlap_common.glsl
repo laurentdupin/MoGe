@@ -1,5 +1,9 @@
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
+#if !defined(OUTPUT_CHANNEL_BLOCK)
+#define OUTPUT_CHANNEL_BLOCK 1
+#endif
+
 layout(set = 0, binding = 0, std430) writeonly buffer Output {
     float data[];
 } output_buffer;
@@ -39,14 +43,18 @@ layout(push_constant) uniform Parameters {
 void main() {
     const uint output_x = gl_GlobalInvocationID.x;
     const uint output_y = gl_GlobalInvocationID.y;
+    const uint output_channel_blocks =
+        (parameters.output_channels + OUTPUT_CHANNEL_BLOCK - 1) /
+        OUTPUT_CHANNEL_BLOCK;
     const uint batch =
-        gl_GlobalInvocationID.z / parameters.output_channels;
-    const uint output_channel =
-        gl_GlobalInvocationID.z % parameters.output_channels;
+        gl_GlobalInvocationID.z / output_channel_blocks;
+    const uint output_channel_base =
+        (gl_GlobalInvocationID.z % output_channel_blocks) *
+        OUTPUT_CHANNEL_BLOCK;
     const uint output_width = parameters.input_width * parameters.kernel;
     const uint output_height = parameters.input_height * parameters.kernel;
     if (output_x >= output_width || output_y >= output_height ||
-        output_channel >= parameters.output_channels ||
+        output_channel_base >= parameters.output_channels ||
         batch >= parameters.batches) {
         return;
     }
@@ -54,7 +62,11 @@ void main() {
     const uint input_y = output_y / parameters.kernel;
     const uint kernel_x = output_x % parameters.kernel;
     const uint kernel_y = output_y % parameters.kernel;
-    float sum = 0.0;
+    float sums[OUTPUT_CHANNEL_BLOCK];
+    for (uint output_offset = 0;
+         output_offset < OUTPUT_CHANNEL_BLOCK; ++output_offset) {
+        sums[output_offset] = 0.0;
+    }
     for (uint input_channel = 0;
          input_channel < parameters.input_channels;
          ++input_channel) {
@@ -63,19 +75,29 @@ void main() {
                 input_channel) * parameters.input_height + input_y) *
                 parameters.input_width +
             input_x;
-        const uint weight_index =
-            ((input_channel * parameters.output_channels +
-                output_channel) *
-                parameters.kernel +
-                kernel_y) *
-                parameters.kernel +
-            kernel_x;
-        sum += input_buffer.data[input_index] *
-            read_weight(weight_index);
+        const float input_value = input_buffer.data[input_index];
+        for (uint output_offset = 0;
+             output_offset < OUTPUT_CHANNEL_BLOCK; ++output_offset) {
+            const uint output_channel =
+                output_channel_base + output_offset;
+            if (output_channel < parameters.output_channels) {
+                const uint weight_index =
+                    ((input_channel * parameters.output_channels +
+                        output_channel) * parameters.kernel + kernel_y) *
+                        parameters.kernel + kernel_x;
+                sums[output_offset] += input_value *
+                    read_weight(weight_index);
+            }
+        }
     }
-    output_buffer.data[
-        ((batch * parameters.output_channels +
-            output_channel) * output_height + output_y) *
-            output_width +
-        output_x] = sum + bias_buffer.data[output_channel];
+    for (uint output_offset = 0;
+         output_offset < OUTPUT_CHANNEL_BLOCK; ++output_offset) {
+        const uint output_channel = output_channel_base + output_offset;
+        if (output_channel < parameters.output_channels) {
+            output_buffer.data[
+                ((batch * parameters.output_channels + output_channel) *
+                    output_height + output_y) * output_width + output_x] =
+                sums[output_offset] + bias_buffer.data[output_channel];
+        }
+    }
 }

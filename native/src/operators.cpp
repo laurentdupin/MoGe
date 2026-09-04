@@ -14,7 +14,9 @@
 #include "conv2d_half_spv.h"
 #include "conv2d8_half_spv.h"
 #include "conv_transpose_nonoverlap_spv.h"
+#include "conv_transpose_nonoverlap4_spv.h"
 #include "conv_transpose_nonoverlap_half_spv.h"
+#include "conv_transpose_nonoverlap4_half_spv.h"
 #include "gelu_spv.h"
 #include "layer_norm_spv.h"
 #include "linear_spv.h"
@@ -196,9 +198,19 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
           da3_conv_transpose_nonoverlap_spv_size,
           4,
           24)),
+      conv_transpose_nonoverlap4_(context.create_pipeline(
+          da3_conv_transpose_nonoverlap4_spv,
+          da3_conv_transpose_nonoverlap4_spv_size,
+          4,
+          24)),
       conv_transpose_nonoverlap_half_(context.create_pipeline(
           da3_conv_transpose_nonoverlap_half_spv,
           da3_conv_transpose_nonoverlap_half_spv_size,
+          4,
+          24)),
+      conv_transpose_nonoverlap4_half_(context.create_pipeline(
+          da3_conv_transpose_nonoverlap4_half_spv,
+          da3_conv_transpose_nonoverlap4_half_spv_size,
           4,
           24)),
       bilinear_align_true_(context.create_pipeline(
@@ -259,8 +271,12 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
     conv2d8_half_.set_debug_name("conv2d8_half");
     conv_transpose_nonoverlap_.set_debug_name(
         "conv_transpose_nonoverlap");
+    conv_transpose_nonoverlap4_.set_debug_name(
+        "conv_transpose_nonoverlap4");
     conv_transpose_nonoverlap_half_.set_debug_name(
         "conv_transpose_nonoverlap_half");
+    conv_transpose_nonoverlap4_half_.set_debug_name(
+        "conv_transpose_nonoverlap4_half");
     bilinear_align_true_.set_debug_name(
         "bilinear_align_true");
     bilinear_align_true_image_.set_debug_name(
@@ -879,14 +895,14 @@ void VulkanOperators::conv_transpose_nonoverlap(
         output_channels, kernel, batches};
     context_.dispatch(
         half_weight
-            ? conv_transpose_nonoverlap_half_
-            : conv_transpose_nonoverlap_,
+            ? conv_transpose_nonoverlap4_half_
+            : conv_transpose_nonoverlap4_,
         {&output, &input, &weight, &bias},
         &parameters,
         sizeof(parameters),
         divide_up(output_width, 8),
         divide_up(output_height, 8),
-        output_channels * batches);
+        divide_up(output_channels, 4) * batches);
 }
 
 void VulkanOperators::bilinear_align_true(

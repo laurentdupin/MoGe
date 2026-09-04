@@ -17,7 +17,8 @@ public:
         const da3_native::VulkanBuffer& bias,
         std::uint32_t width, std::uint32_t height,
         std::uint32_t input_channels, std::uint32_t output_channels,
-        std::uint32_t kernel, std::uint32_t padding);
+        std::uint32_t kernel, std::uint32_t padding,
+        bool input_relu = false);
     void bilinear(
         da3_native::VulkanBuffer& output,
         const da3_native::VulkanBuffer& input,
@@ -59,6 +60,7 @@ public:
 private:
     da3_native::VulkanContext& context_;
     da3_native::VulkanPipeline conv2d_replicate_;
+    da3_native::VulkanPipeline conv2d_replicate_tiled16x8_;
     da3_native::VulkanPipeline bilinear_;
     da3_native::VulkanPipeline concat_uv_;
     da3_native::VulkanPipeline remap_points_mask_;

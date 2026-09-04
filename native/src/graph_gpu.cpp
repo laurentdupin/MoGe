@@ -61,21 +61,17 @@ VulkanBuffer residual(
     const std::string& prefix, std::uint32_t width, std::uint32_t height,
     std::uint32_t channels) {
     const std::uint32_t count = width * height * channels;
-    VulkanBuffer activated = allocate(context, width, height, channels);
     VulkanBuffer hidden = allocate(context, width, height, channels);
-    VulkanBuffer second_activated = allocate(context, width, height, channels);
     VulkanBuffer transformed = allocate(context, width, height, channels);
     VulkanBuffer output = allocate(context, width, height, channels);
-    operators.relu(activated, input, count);
-    moge.conv2d_replicate(hidden, activated,
+    moge.conv2d_replicate(hidden, input,
         tensor(model, prefix + ".layers.2.weight"),
         tensor(model, prefix + ".layers.2.bias"),
-        width, height, channels, channels, 3u, 1u);
-    operators.relu(second_activated, hidden, count);
-    moge.conv2d_replicate(transformed, second_activated,
+        width, height, channels, channels, 3u, 1u, true);
+    moge.conv2d_replicate(transformed, hidden,
         tensor(model, prefix + ".layers.5.weight"),
         tensor(model, prefix + ".layers.5.bias"),
-        width, height, channels, channels, 3u, 1u);
+        width, height, channels, channels, 3u, 1u, true);
     operators.add(output, input, transformed, count);
     return output;
 }
