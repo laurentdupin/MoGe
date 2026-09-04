@@ -33,8 +33,9 @@ layout(push_constant) uniform Parameters {
     uint output_columns;
 } parameters;
 
-shared float input_tile[32 * K_TILE];
-shared float weight_tile[32 * K_TILE];
+#define K_STRIDE (K_TILE + 1)
+shared float input_tile[32 * K_STRIDE];
+shared float weight_tile[32 * K_STRIDE];
 
 void main() {
     const uint column_base =
@@ -62,7 +63,7 @@ void main() {
             const uint inner = inner_base + index % K_TILE;
             const uint output_row =
                 gl_WorkGroupID.y * 32 + tile_row;
-            input_tile[index] =
+            input_tile[tile_row * K_STRIDE + index % K_TILE] =
                 output_row < parameters.rows &&
                     inner < parameters.input_columns
                 ? input_buffer.data[
@@ -74,7 +75,7 @@ void main() {
             const uint inner = inner_base + index % K_TILE;
             const uint output_column =
                 gl_WorkGroupID.x * 32 + tile_column;
-            weight_tile[index] =
+            weight_tile[tile_column * K_STRIDE + index % K_TILE] =
                 output_column < parameters.output_columns
                     && inner < parameters.input_columns
                 ? read_weight(
@@ -89,11 +90,11 @@ void main() {
             float weight_values[4];
             for (uint row = 0; row < 4; ++row) {
                 input_values[row] = input_tile[
-                    (gl_LocalInvocationID.y * 4 + row) * K_TILE + inner];
+                    (gl_LocalInvocationID.y * 4 + row) * K_STRIDE + inner];
             }
             for (uint column = 0; column < 4; ++column) {
                 weight_values[column] = weight_tile[
-                    (gl_LocalInvocationID.x * 4 + column) * K_TILE + inner];
+                    (gl_LocalInvocationID.x * 4 + column) * K_STRIDE + inner];
             }
             for (uint row = 0; row < 4; ++row) {
                 for (uint column = 0; column < 4; ++column) {

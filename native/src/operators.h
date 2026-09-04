@@ -168,6 +168,7 @@ private:
     VulkanPipeline linear_vec8_;
     VulkanPipeline quantize_rows_int8_;
     VulkanPipeline linear_int8_tiled_;
+    VulkanPipeline linear_int8_tiled16_;
     VulkanPipeline linear_half_;
     VulkanPipeline linear16_half_;
     VulkanPipeline gelu_;

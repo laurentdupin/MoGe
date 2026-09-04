@@ -41,7 +41,7 @@ void transformer_linear(
             output, input,
             model.uses_half_weights() ? tensor.half_buffer : tensor.buffer,
             model.tensor(bias_name).buffer,
-            rows, input_columns, output_columns, gelu, false,
+            rows, input_columns, output_columns, gelu, true,
             model.uses_half_weights());
     }
 }

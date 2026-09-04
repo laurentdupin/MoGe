@@ -37,7 +37,7 @@ if(MOGE2_WITH_VULKAN)
     conv2d_replicate conv2d_replicate_tiled16x8 concat_uv remap_points_mask solve_focal_shift final_depth
     final_depth_image preprocess_moge_texture
     conv_transpose_nonoverlap_half conv_transpose_nonoverlap4_half elementwise gelu layer_norm linear linear16
-    linear_vec8 linear_half linear16_half prepare_tokens position_bicubic
+    linear_vec8 linear_half linear16_half linear_int8_tiled16 prepare_tokens position_bicubic
     project_tokens project_tokens_half relu softmax_lastdim softmax_lastdim_half
     replace_token qk_rope capture_concat add_uv exponential tokens_to_nchw)
     moge2_shader(${SHADER})

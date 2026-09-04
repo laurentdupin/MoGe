@@ -25,6 +25,7 @@
 #include "linear_half_spv.h"
 #include "linear16_half_spv.h"
 #include "linear_int8_tiled_spv.h"
+#include "linear_int8_tiled16_spv.h"
 #include "quantize_rows_int8_spv.h"
 #include "prepare_tokens_spv.h"
 #include "position_bicubic_spv.h"
@@ -109,6 +110,13 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
           ? context.create_pipeline(
               da3_linear_int8_tiled_spv,
               da3_linear_int8_tiled_spv_size, 6, 28)
+          : VulkanPipeline{}),
+      linear_int8_tiled16_(context.supports_packed_int8_dot() &&
+              inferbridge::native::requested_precision() ==
+                  inferbridge::native::Precision::int8
+          ? context.create_pipeline(
+              da3_linear_int8_tiled16_spv,
+              da3_linear_int8_tiled16_spv_size, 6, 28)
           : VulkanPipeline{}),
       linear_half_(context.create_pipeline(
           da3_linear_half_spv, da3_linear_half_spv_size, 4, 12)),
@@ -246,6 +254,7 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
     if (context.supports_packed_int8_dot()) {
         quantize_rows_int8_.set_debug_name("quantize_rows_int8");
         linear_int8_tiled_.set_debug_name("linear_int8_tiled");
+        linear_int8_tiled16_.set_debug_name("linear_int8_tiled16");
     }
     linear_half_.set_debug_name("linear_half");
     linear16_half_.set_debug_name("linear16_half");
@@ -318,7 +327,7 @@ void VulkanOperators::linear_int8(
     const std::uint32_t parameters[7] = {
         rows, input_columns, output_columns, 0u, output_columns, 0u, 1u};
     context_.dispatch(
-        linear_int8_tiled_,
+        rows >= 256u ? linear_int8_tiled16_ : linear_int8_tiled_,
         {&output, &packed_input, &packed_weight, &input_scales,
          &weight_scales, &bias},
         parameters, sizeof(parameters),
