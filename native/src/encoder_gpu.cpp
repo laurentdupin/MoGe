@@ -5,7 +5,6 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
-#include <vector>
 
 namespace moge2_native {
 namespace {
@@ -79,17 +78,12 @@ EncoderOutput encode_vits(
     da3_native::VulkanBuffer& qkv = alias_qkv ? hidden : qkv_storage;
     da3_native::VulkanBuffer scores = context.create_device_buffer(
         std::uint64_t(config.heads) * tokens * tokens * sizeof(float));
-    std::vector<da3_native::VulkanBuffer> captured;
-    captured.reserve(config.capture_count);
-    for (std::uint32_t index = 0u; index < config.capture_count; ++index) {
-        captured.push_back(context.create_device_buffer(
-            std::uint64_t(patches) * config.decoder_embedding * sizeof(float)));
-    }
     EncoderOutput output{
         token_width, token_height,
         context.create_device_buffer(
             std::uint64_t(patches) * config.decoder_embedding * sizeof(float)),
         context.create_device_buffer(embedding * sizeof(float))};
+    std::uint32_t captured_count = 0u;
 
     const auto prepare = [&] {
         operators.prepare_tokens(
@@ -153,27 +147,14 @@ EncoderOutput encode_vits(
                     tokens, embedding, 1.0e-6f);
                 const std::string projection = "encoder.output_projections." +
                     std::to_string(capture);
+                const bool accumulate = captured_count++ != 0u;
                 operators.project_tokens(
-                    captured[capture], normalized,
+                    output.features, normalized,
                     weight(model, projection + ".weight"),
                     weight(model, projection + ".bias"),
                     token_width, token_height, embedding,
-                    config.decoder_embedding);
+                    config.decoder_embedding, false, 1u, accumulate);
             }
-    };
-    const auto finish = [&] {
-        da3_native::VulkanBuffer accumulator = std::move(captured[0]);
-        for (std::uint32_t capture = 1u;
-            capture < config.capture_count; ++capture) {
-            const bool last = capture + 1u == config.capture_count;
-            da3_native::VulkanBuffer sum = last ? da3_native::VulkanBuffer{} :
-                context.create_device_buffer(std::uint64_t(patches) *
-                    config.decoder_embedding * sizeof(float));
-            da3_native::VulkanBuffer& destination = last ? output.features : sum;
-            operators.add(destination, accumulator, captured[capture],
-                patches * config.decoder_embedding);
-            if (!last) accumulator = std::move(sum);
-        }
     };
 #if defined(__ANDROID__)
     // Keep each transformer block in a bounded submission. A single command
@@ -183,7 +164,6 @@ EncoderOutput encode_vits(
     for (std::uint32_t block = 0; block < config.blocks; ++block) {
         context.batch([&] { run_block(block); });
     }
-    context.batch(finish);
 #else
     // Desktop drivers do not have the Adreno watchdog constraint. One command
     // buffer avoids a CPU/GPU round trip for every transformer block.
@@ -192,7 +172,6 @@ EncoderOutput encode_vits(
         for (std::uint32_t block = 0; block < config.blocks; ++block) {
             run_block(block);
         }
-        finish();
     });
 #endif
     context.copy(

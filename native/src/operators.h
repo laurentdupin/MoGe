@@ -81,7 +81,8 @@ public:
         std::uint32_t embedding,
         std::uint32_t output_channels,
         bool half_weight = false,
-        std::uint32_t batches = 1);
+        std::uint32_t batches = 1,
+        bool accumulate = false);
 
     void conv2d(
         VulkanBuffer& output,
@@ -185,6 +186,8 @@ private:
     VulkanPipeline add_;
     VulkanPipeline project_tokens_;
     VulkanPipeline project_tokens_half_;
+    VulkanPipeline project_tokens_accumulate_;
+    VulkanPipeline project_tokens_half_accumulate_;
     VulkanPipeline conv2d_;
     VulkanPipeline conv2d8_;
     VulkanPipeline conv2d_half_;

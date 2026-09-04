@@ -31,6 +31,8 @@
 #include "position_bicubic_spv.h"
 #include "project_tokens_spv.h"
 #include "project_tokens_half_spv.h"
+#include "project_tokens_accumulate_spv.h"
+#include "project_tokens_half_accumulate_spv.h"
 #include "relu_spv.h"
 #include "softmax_lastdim_spv.h"
 #include "softmax_lastdim_half_spv.h"
@@ -190,6 +192,16 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
           da3_project_tokens_half_spv_size,
           4,
           20)),
+      project_tokens_accumulate_(context.create_pipeline(
+          da3_project_tokens_accumulate_spv,
+          da3_project_tokens_accumulate_spv_size,
+          5,
+          20)),
+      project_tokens_half_accumulate_(context.create_pipeline(
+          da3_project_tokens_half_accumulate_spv,
+          da3_project_tokens_half_accumulate_spv_size,
+          5,
+          20)),
       conv2d_(context.create_pipeline(
           da3_conv2d_spv, da3_conv2d_spv_size, 4, 48)),
       conv2d8_(context.create_pipeline(
@@ -274,6 +286,10 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
     project_tokens_.set_debug_name("project_tokens");
     project_tokens_half_.set_debug_name(
         "project_tokens_half");
+    project_tokens_accumulate_.set_debug_name(
+        "project_tokens_accumulate");
+    project_tokens_half_accumulate_.set_debug_name(
+        "project_tokens_half_accumulate");
     conv2d_.set_debug_name("conv2d");
     conv2d8_.set_debug_name("conv2d8");
     conv2d_half_.set_debug_name("conv2d_half");
@@ -733,7 +749,8 @@ void VulkanOperators::project_tokens(
     std::uint32_t embedding,
     std::uint32_t output_channels,
     bool half_weight,
-    std::uint32_t batches) {
+    std::uint32_t batches,
+    bool accumulate) {
     if (width == 0 || height == 0 || embedding == 0 ||
         output_channels == 0 || batches == 0) {
         throw std::invalid_argument("invalid token projection dimensions");
@@ -763,14 +780,23 @@ void VulkanOperators::project_tokens(
         std::uint32_t batches;
     } parameters{
         width, height, embedding, output_channels, batches};
-    context_.dispatch(
-        half_weight ? project_tokens_half_ : project_tokens_,
-        {&output, &tokens, &weight, &bias},
-        &parameters,
-        sizeof(parameters),
-        divide_up(output_channels, 32),
-        divide_up(width * height, 32),
-        batches);
+    if (accumulate) {
+        context_.dispatch(
+            half_weight
+                ? project_tokens_half_accumulate_
+                : project_tokens_accumulate_,
+            {&output, &tokens, &weight, &bias, &output},
+            &parameters, sizeof(parameters),
+            divide_up(output_channels, 32),
+            divide_up(width * height, 32), batches);
+    } else {
+        context_.dispatch(
+            half_weight ? project_tokens_half_ : project_tokens_,
+            {&output, &tokens, &weight, &bias},
+            &parameters, sizeof(parameters),
+            divide_up(output_channels, 32),
+            divide_up(width * height, 32), batches);
+    }
 }
 
 void VulkanOperators::conv2d(
