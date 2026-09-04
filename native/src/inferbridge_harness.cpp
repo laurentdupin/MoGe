@@ -389,9 +389,8 @@ bool valid_binding(const ibrh_transfer_binding& input,
          input.synchronization.operation == IBRH_SYNC_WAIT &&
          input.synchronization.native_handle_type == sync_handle &&
          input.synchronization.native_handle != 0u);
-#else
-    return false;
 #endif
+#if defined(_WIN32) || (defined(MOGE2_WITH_METAL) && defined(__APPLE__))
     return input.resource.domain == domain &&
         output.resource.domain == domain &&
         input.resource.kind == IBRH_RESOURCE_KIND_IMAGE_2D &&
@@ -408,6 +407,9 @@ bool valid_binding(const ibrh_transfer_binding& input,
         output.synchronization.native_handle != 0u &&
         input.resource.width == output.resource.width &&
         input.resource.height == output.resource.height;
+#else
+    return false;
+#endif
 }
 
 bool valid_host_binding(const ibrh_transfer_binding& input,
