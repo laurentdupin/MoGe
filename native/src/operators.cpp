@@ -19,6 +19,7 @@
 #include "conv_transpose_nonoverlap4_half_spv.h"
 #include "gelu_spv.h"
 #include "layer_norm_spv.h"
+#include "layer_norm_quantize_int8_spv.h"
 #include "linear_spv.h"
 #include "linear16_spv.h"
 #include "linear_vec8_spv.h"
@@ -87,7 +88,7 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
       linear16_(context.create_pipeline(
           da3_linear16_spv, da3_linear16_spv_size, 4, 12)),
       linear_vec8_(context.create_pipeline(
-          da3_linear_vec8_spv, da3_linear_vec8_spv_size, 4, 12)),
+          da3_linear_vec8_spv, da3_linear_vec8_spv_size, 6, 16)),
       quantize_rows_int8_(context.supports_packed_int8_dot() &&
               inferbridge::native::requested_precision() ==
                   inferbridge::native::Precision::int8
@@ -106,6 +107,13 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
                             },
                             4)
           : VulkanPipeline{}),
+      layer_norm_quantize_int8_(context.supports_packed_int8_dot() &&
+              inferbridge::native::requested_precision() ==
+                  inferbridge::native::Precision::int8
+          ? context.create_pipeline(
+              da3_layer_norm_quantize_int8_spv,
+              da3_layer_norm_quantize_int8_spv_size, 5, 8)
+          : VulkanPipeline{}),
       linear_int8_tiled_(context.supports_packed_int8_dot() &&
               inferbridge::native::requested_precision() ==
                   inferbridge::native::Precision::int8
@@ -121,12 +129,12 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
               da3_linear_int8_tiled16_spv_size, 6, 28)
           : VulkanPipeline{}),
       linear_half_(context.create_pipeline(
-          da3_linear_half_spv, da3_linear_half_spv_size, 4, 12)),
+          da3_linear_half_spv, da3_linear_half_spv_size, 6, 16)),
       linear16_half_(context.create_pipeline(
           da3_linear16_half_spv,
           da3_linear16_half_spv_size,
-          4,
-          12)),
+          6,
+          16)),
       gelu_(context.create_pipeline(
           da3_gelu_spv, da3_gelu_spv_size, 2, 4)),
       layer_norm_(context.create_pipeline(
@@ -356,6 +364,58 @@ void VulkanOperators::linear_int8(
     }
 }
 
+void VulkanOperators::layer_norm_linear_int8(
+    VulkanBuffer& output,
+    const VulkanBuffer& input,
+    const VulkanBuffer& norm_weight,
+    const VulkanBuffer& norm_bias,
+    const VulkanBuffer& packed_weight,
+    const VulkanBuffer& weight_scales,
+    const VulkanBuffer& bias,
+    std::uint32_t rows,
+    std::uint32_t input_columns,
+    std::uint32_t output_columns,
+    float epsilon,
+    bool gelu) {
+    if (!context_.supports_packed_int8_dot() || input_columns % 4u != 0u)
+        throw std::runtime_error("accelerated packed INT8 linear is unavailable");
+    require_bytes(input, std::uint64_t(rows) * input_columns, "input");
+    require_bytes(norm_weight, input_columns, "normalization weight");
+    require_bytes(norm_bias, input_columns, "normalization bias");
+    VulkanBuffer& packed_input = int8_workspace_.packed(
+        std::uint64_t(rows) * (input_columns / 4u) * sizeof(std::uint32_t),
+        [this](std::uint64_t bytes) {
+            return context_.create_device_buffer(bytes);
+        });
+    VulkanBuffer& input_scales = int8_workspace_.scales(
+        std::uint64_t(rows) * sizeof(float),
+        [this](std::uint64_t bytes) {
+            return context_.create_device_buffer(bytes);
+        });
+    struct Parameters {
+        std::uint32_t columns;
+        float epsilon;
+    } normalization{input_columns, epsilon};
+    context_.dispatch(
+        layer_norm_quantize_int8_,
+        {&input, &norm_weight, &norm_bias, &packed_input, &input_scales},
+        &normalization, sizeof(normalization), rows);
+    const std::uint32_t parameters[7] = {
+        rows, input_columns, output_columns, 0u, output_columns, 0u, 1u};
+    context_.dispatch(
+        rows >= 256u ? linear_int8_tiled16_ : linear_int8_tiled_,
+        {&output, &packed_input, &packed_weight, &input_scales,
+         &weight_scales, &bias},
+        parameters, sizeof(parameters),
+        divide_up(output_columns, 64u), divide_up(rows, 56u));
+    if (gelu) {
+        const std::uint32_t count = rows * output_columns;
+        context_.dispatch(
+            gelu_, {&output, &output}, &count, sizeof(count),
+            divide_up(count, 256u));
+    }
+}
+
 void VulkanOperators::linear(
     VulkanBuffer& output,
     const VulkanBuffer& input,
@@ -366,7 +426,9 @@ void VulkanOperators::linear(
     std::uint32_t output_columns,
     bool gelu,
     bool block16,
-    bool half_weight) {
+    bool half_weight,
+    const VulkanBuffer* residual,
+    const VulkanBuffer* scale) {
     if (rows == 0 || input_columns == 0 || output_columns == 0) {
         throw std::invalid_argument("linear dimensions cannot be zero");
     }
@@ -381,11 +443,22 @@ void VulkanOperators::linear(
     require_bytes(bias, output_columns, "bias");
     require_bytes(
         output, std::uint64_t(rows) * output_columns, "output");
+    if ((residual == nullptr) != (scale == nullptr)) {
+        throw std::invalid_argument(
+            "linear residual and scale must be provided together");
+    }
+    if (residual != nullptr) {
+        require_bytes(
+            *residual, std::uint64_t(rows) * output_columns, "residual");
+        require_bytes(*scale, output_columns, "scale");
+    }
     struct Parameters {
         std::uint32_t rows;
         std::uint32_t input_columns;
         std::uint32_t output_columns;
-    } parameters{rows, input_columns, output_columns};
+        std::uint32_t residual;
+    } parameters{
+        rows, input_columns, output_columns, residual != nullptr ? 1u : 0u};
     VulkanPipeline& pipeline = half_weight
         ? (block16 ? linear16_half_ : linear_half_)
         : linear_vec8_;
@@ -397,7 +470,11 @@ void VulkanOperators::linear(
         : divide_up(rows, 56);
     context_.dispatch(
         pipeline,
-        {&output, &input, &weight, &bias},
+        {
+            &output, &input, &weight, &bias,
+            residual != nullptr ? residual : &output,
+            scale != nullptr ? scale : &bias,
+        },
         &parameters,
         sizeof(parameters),
         groups_x,
