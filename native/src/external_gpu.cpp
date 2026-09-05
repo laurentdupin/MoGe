@@ -1,3 +1,6 @@
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <inferbridge/linux_capture_preprocess.h>
+#endif
 #include "external_gpu.h"
 #include "moge2_native.h"
 
@@ -213,6 +216,9 @@ public:
         std::uint32_t height, std::size_t row_stride, bool rgba,
         std::uint32_t num_tokens, float background_distance_metres,
         float* output) override {
+#if defined(__linux__) && !defined(__ANDROID__)
+        std::lock_guard<std::mutex> lock(linux_execution_mutex_);
+#endif
         if (pixels == nullptr || output == nullptr || width == 0u ||
             height == 0u || num_tokens < 16u)
             throw std::invalid_argument("invalid MoGe-2 host request");
@@ -240,6 +246,24 @@ public:
             static_cast<std::size_t>(width) * height * sizeof(float));
     }
 
+#if defined(__linux__) && !defined(__ANDROID__)
+    mutable std::mutex linux_execution_mutex_;
+    ibr_linux_capture_capabilities linux_capture_capabilities() const override {
+        return context_.linux_capture_capabilities();
+    }
+    void infer_linux_capture(const inferbridge::linux_capture::LinuxDmaBufImage& source,
+        uint32_t num_tokens,float background,float* output) override {
+        std::lock_guard<std::mutex> lock(linux_execution_mutex_);
+        const float aspect=float(source.width)/source.height;
+        const uint32_t width=std::max(1u,uint32_t(std::nearbyint(std::sqrt(num_tokens*aspect))))*14;
+        const uint32_t height=std::max(1u,uint32_t(std::nearbyint(std::sqrt(num_tokens/aspect))))*14;
+        auto image=inferbridge::linux_capture::capture_tensor(context_,source,width,height,
+            {1,false,{.485f,.456f,.406f,0},{.229f,.224f,.225f,1}});
+        auto depth=infer_vits_normal(context_,model_,operators_,moge_operators_,config_,
+            std::move(image),width,height,source.width,source.height,background);
+        context_.download(depth.depth,output,uint64_t(source.width)*source.height*sizeof(float));
+    }
+#endif
     void transfer_counters(
         std::uint64_t& upload_bytes, std::uint64_t& download_bytes) const override {
         context_.transfer_counters(upload_bytes, download_bytes);

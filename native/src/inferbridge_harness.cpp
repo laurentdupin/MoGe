@@ -16,6 +16,9 @@
 #include <thread>
 
 struct ibrh_runtime {
+#if defined(__linux__) && !defined(__ANDROID__)
+    bool force_host_transfers = false;
+#endif
     std::string error;
     std::uint32_t device_index = 0u;
     std::uint64_t adapter_luid = 0u;
@@ -214,6 +217,10 @@ ibrh_result IBRH_CALL runtime_create(std::size_t size,
     auto runtime = std::unique_ptr<ibrh_runtime>(new (std::nothrow) ibrh_runtime());
     if (!runtime) return IBRH_ERROR_INTERNAL;
     const std::string device = text(request->requested_device_json);
+#if defined(__linux__) && !defined(__ANDROID__)
+    std::string transfer_mode;
+    runtime->force_host_transfers = json_string(device,"transfer_mode",transfer_mode) && transfer_mode=="host";
+#endif
     (void)json_uint(device, "index", runtime->device_index);
     std::string luid_text;
     if (json_string(device, "luid", luid_text)) {
@@ -549,6 +556,22 @@ ibrh_result IBRH_CALL get_last_error(const void* object, char* destination,
 }
 }  // namespace
 
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <inferbridge/linux_capture_harness.h>
+namespace {
+struct LinuxCaptureHooks {
+    static ibr_linux_capture_capabilities capabilities(ibrh_model* model) {
+        return model->gpu->linux_capture_capabilities();
+    }
+    static void infer(ibrh_model* model,const inferbridge::linux_capture::LinuxDmaBufImage& source,
+        const std::string&,float* output, uint64_t, uint64_t) {
+        model->gpu->infer_linux_capture(source,model->num_tokens,float(model->background_distance_metres),output);
+    }
+};
+}
+#include <inferbridge/linux_capture_export.inl>
+#endif
+
 extern "C" IBRH_API ibrh_result IBRH_CALL ibrh_get_api(
     std::uint32_t requested_version, std::size_t size, ibrh_api* api) {
     if (!api) return IBRH_ERROR_INVALID_ARGUMENT;
@@ -571,5 +594,8 @@ extern "C" IBRH_API ibrh_result IBRH_CALL ibrh_get_api(
     api->job_cancel = job_cancel;
     api->job_release = job_release;
     api->get_last_error = get_last_error;
+#if defined(__linux__) && !defined(__ANDROID__)
+    inferbridge::linux_capture::HarnessAdapter<LinuxCaptureHooks>::install(api);
+#endif
     return IBRH_OK;
 }

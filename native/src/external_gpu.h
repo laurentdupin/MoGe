@@ -1,4 +1,7 @@
 #pragma once
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <inferbridge/linux_capture_vulkan.h>
+#endif
 
 #include <cstdint>
 #include <cstddef>
@@ -41,6 +44,11 @@ public:
 
 class ExternalGpu : public std::enable_shared_from_this<ExternalGpu> {
 public:
+#if defined(__linux__) && !defined(__ANDROID__)
+    virtual ibr_linux_capture_capabilities linux_capture_capabilities() const = 0;
+    virtual void infer_linux_capture(const inferbridge::linux_capture::LinuxDmaBufImage&,
+        uint32_t tokens, float background, float* output) = 0;
+#endif
     virtual ~ExternalGpu() = default;
     virtual ExternalGpuCapabilities capabilities() const = 0;
     virtual std::shared_ptr<ExternalJob> submit_texture(

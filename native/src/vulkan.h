@@ -12,6 +12,10 @@
 #  endif
 #endif
 #include <vulkan/vulkan.h>
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <inferbridge/linux_capture_vulkan.h>
+#include <memory>
+#endif
 
 #include <atomic>
 #include <cstddef>
@@ -169,6 +173,16 @@ private:
 
 class VulkanContext {
 public:
+#if defined(__linux__) && !defined(__ANDROID__)
+    ibr_linux_capture_capabilities linux_capture_capabilities() const;
+    VulkanPipeline& capture_pipeline();
+    VulkanImage& capture_image(const inferbridge::linux_capture::LinuxDmaBufImage& source);
+    VulkanImage import_dma_buf(int file_descriptor, std::uint64_t allocation_size,
+        std::uint64_t byte_offset, std::uint64_t modifier,
+        std::uint32_t row_stride, std::uint32_t width, std::uint32_t height,
+        VkFormat format, VkImageUsageFlags usage);
+#endif
+
     explicit VulkanContext(
         std::uint32_t device_index,
         bool track_resource_hazards = true);
@@ -353,6 +367,11 @@ public:
     }
 
 private:
+#if defined(__linux__) && !defined(__ANDROID__)
+    bool linux_dma_buf_enabled_ = false;
+    inferbridge::linux_capture::ImageCache<VulkanImage> linux_capture_images_;
+    std::unique_ptr<VulkanPipeline> linux_capture_pipeline_;
+#endif
     friend class VulkanSemaphore;
     friend class VulkanSubmission;
     friend class VulkanBuffer;
