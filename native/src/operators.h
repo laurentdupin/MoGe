@@ -21,7 +21,9 @@ public:
         std::uint32_t output_columns,
         bool gelu,
         bool block16 = false,
-        bool half_weight = false);
+        bool half_weight = false,
+        const VulkanBuffer* residual = nullptr,
+        const VulkanBuffer* scale = nullptr);
     void linear_int8(
         VulkanBuffer& output,
         const VulkanBuffer& input,
@@ -31,6 +33,19 @@ public:
         std::uint32_t rows,
         std::uint32_t input_columns,
         std::uint32_t output_columns,
+        bool gelu = false);
+    void layer_norm_linear_int8(
+        VulkanBuffer& output,
+        const VulkanBuffer& input,
+        const VulkanBuffer& norm_weight,
+        const VulkanBuffer& norm_bias,
+        const VulkanBuffer& packed_weight,
+        const VulkanBuffer& weight_scales,
+        const VulkanBuffer& bias,
+        std::uint32_t rows,
+        std::uint32_t input_columns,
+        std::uint32_t output_columns,
+        float epsilon,
         bool gelu = false);
 
     void layer_norm(
@@ -81,7 +96,8 @@ public:
         std::uint32_t embedding,
         std::uint32_t output_channels,
         bool half_weight = false,
-        std::uint32_t batches = 1);
+        std::uint32_t batches = 1,
+        bool accumulate = false);
 
     void conv2d(
         VulkanBuffer& output,
@@ -167,6 +183,7 @@ private:
     VulkanPipeline linear16_;
     VulkanPipeline linear_vec8_;
     VulkanPipeline quantize_rows_int8_;
+    VulkanPipeline layer_norm_quantize_int8_;
     VulkanPipeline linear_int8_tiled_;
     VulkanPipeline linear_int8_tiled16_;
     VulkanPipeline linear_half_;
@@ -185,6 +202,8 @@ private:
     VulkanPipeline add_;
     VulkanPipeline project_tokens_;
     VulkanPipeline project_tokens_half_;
+    VulkanPipeline project_tokens_accumulate_;
+    VulkanPipeline project_tokens_half_accumulate_;
     VulkanPipeline conv2d_;
     VulkanPipeline conv2d8_;
     VulkanPipeline conv2d_half_;

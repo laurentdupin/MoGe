@@ -26,6 +26,11 @@ float read_weight(uint index) {
 layout(set = 0, binding = 3, std430) readonly buffer Bias {
     float data[];
 } bias_buffer;
+#if defined(ACCUMULATE)
+layout(set = 0, binding = 4, std430) readonly buffer Previous {
+    float data[];
+} previous_buffer;
+#endif
 
 layout(push_constant) uniform Parameters {
     uint width;
@@ -114,12 +119,17 @@ void main() {
         for (uint column = 0; column < 4; ++column) {
             const uint output_channel = channel_base + column;
             if (output_channel < parameters.output_channels) {
-                output_buffer.data[
+                const uint output_index =
                     (batch * parameters.output_channels +
                         output_channel) *
                             spatial +
-                    output_spatial] =
+                    output_spatial;
+                float value =
                     sums[row][column] + bias_buffer.data[output_channel];
+#if defined(ACCUMULATE)
+                value = previous_buffer.data[output_index] + value;
+#endif
+                output_buffer.data[output_index] = value;
             }
         }
     }

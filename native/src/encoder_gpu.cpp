@@ -5,7 +5,6 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
-#include <vector>
 
 namespace moge2_native {
 namespace {
@@ -29,20 +28,27 @@ void transformer_linear(
     const da3_native::VulkanBuffer& input,
     const std::string& weight_name, const std::string& bias_name,
     std::uint32_t rows, std::uint32_t input_columns,
-    std::uint32_t output_columns, bool gelu = false) {
+    std::uint32_t output_columns, bool gelu = false,
+    const da3_native::VulkanBuffer* residual = nullptr,
+    const da3_native::VulkanBuffer* scale = nullptr) {
     const auto& tensor = model.tensor(weight_name);
     if (model.uses_int8_weights()) {
         operators.linear_int8(
             output, input, tensor.int8_buffer, tensor.int8_scales,
             model.tensor(bias_name).buffer,
             rows, input_columns, output_columns, gelu);
+        if (residual != nullptr) {
+            operators.add_scaled(
+                output, *residual, output, *scale,
+                rows * output_columns, output_columns);
+        }
     } else {
         operators.linear(
             output, input,
             model.uses_half_weights() ? tensor.half_buffer : tensor.buffer,
             model.tensor(bias_name).buffer,
             rows, input_columns, output_columns, gelu, true,
-            model.uses_half_weights());
+            model.uses_half_weights(), residual, scale);
     }
 }
 }  // namespace
@@ -69,7 +75,6 @@ EncoderOutput encode_vits(
     da3_native::VulkanBuffer next = context.create_device_buffer(bytes);
     da3_native::VulkanBuffer normalized = context.create_device_buffer(bytes);
     da3_native::VulkanBuffer attended = context.create_device_buffer(bytes);
-    da3_native::VulkanBuffer projected = context.create_device_buffer(bytes);
     da3_native::VulkanBuffer hidden = context.create_device_buffer(bytes * 4u);
     const bool alias_qkv =
         inferbridge::native_harness::scratch_aliasing_enabled();
@@ -79,17 +84,12 @@ EncoderOutput encode_vits(
     da3_native::VulkanBuffer& qkv = alias_qkv ? hidden : qkv_storage;
     da3_native::VulkanBuffer scores = context.create_device_buffer(
         std::uint64_t(config.heads) * tokens * tokens * sizeof(float));
-    std::vector<da3_native::VulkanBuffer> captured;
-    captured.reserve(config.capture_count);
-    for (std::uint32_t index = 0u; index < config.capture_count; ++index) {
-        captured.push_back(context.create_device_buffer(
-            std::uint64_t(patches) * config.decoder_embedding * sizeof(float)));
-    }
     EncoderOutput output{
         token_width, token_height,
         context.create_device_buffer(
             std::uint64_t(patches) * config.decoder_embedding * sizeof(float)),
         context.create_device_buffer(embedding * sizeof(float))};
+    std::uint32_t captured_count = 0u;
 
     const auto prepare = [&] {
         operators.prepare_tokens(
@@ -101,47 +101,65 @@ EncoderOutput encode_vits(
             width, height, embedding);
     };
     const auto run_block = [&](std::uint32_t block) {
-            operators.layer_norm(
-                normalized, state,
-                weight(model, block_name(block, ".norm1.weight")),
-                weight(model, block_name(block, ".norm1.bias")),
-                tokens, embedding, 1.0e-6f);
-            transformer_linear(
-                operators, model, qkv, normalized,
-                block_name(block, ".attn.qkv.weight"),
-                block_name(block, ".attn.qkv.bias"),
-                tokens, embedding, embedding * 3u);
+            if (model.uses_int8_weights()) {
+                const auto& qkv_weight = model.tensor(
+                    block_name(block, ".attn.qkv.weight"));
+                operators.layer_norm_linear_int8(
+                    qkv, state,
+                    weight(model, block_name(block, ".norm1.weight")),
+                    weight(model, block_name(block, ".norm1.bias")),
+                    qkv_weight.int8_buffer, qkv_weight.int8_scales,
+                    weight(model, block_name(block, ".attn.qkv.bias")),
+                    tokens, embedding, embedding * 3u, 1.0e-6f);
+            } else {
+                operators.layer_norm(
+                    normalized, state,
+                    weight(model, block_name(block, ".norm1.weight")),
+                    weight(model, block_name(block, ".norm1.bias")),
+                    tokens, embedding, 1.0e-6f);
+                transformer_linear(
+                    operators, model, qkv, normalized,
+                    block_name(block, ".attn.qkv.weight"),
+                    block_name(block, ".attn.qkv.bias"),
+                    tokens, embedding, embedding * 3u);
+            }
             operators.attention_head64(
                 attended, qkv, tokens, config.heads, &scores);
             transformer_linear(
-                operators, model, projected, attended,
+                operators, model, next, attended,
                 block_name(block, ".attn.proj.weight"),
                 block_name(block, ".attn.proj.bias"),
-                tokens, embedding, embedding);
-            operators.add_scaled(
-                next, state, projected,
-                weight(model, block_name(block, ".ls1.gamma")),
-                static_cast<std::uint32_t>(elements), embedding);
+                tokens, embedding, embedding, false, &state,
+                &weight(model, block_name(block, ".ls1.gamma")));
             std::swap(state, next);
-            operators.layer_norm(
-                normalized, state,
-                weight(model, block_name(block, ".norm2.weight")),
-                weight(model, block_name(block, ".norm2.bias")),
-                tokens, embedding, 1.0e-6f);
+            if (model.uses_int8_weights()) {
+                const auto& fc1_weight = model.tensor(
+                    block_name(block, ".mlp.fc1.weight"));
+                operators.layer_norm_linear_int8(
+                    hidden, state,
+                    weight(model, block_name(block, ".norm2.weight")),
+                    weight(model, block_name(block, ".norm2.bias")),
+                    fc1_weight.int8_buffer, fc1_weight.int8_scales,
+                    weight(model, block_name(block, ".mlp.fc1.bias")),
+                    tokens, embedding, embedding * 4u, 1.0e-6f, true);
+            } else {
+                operators.layer_norm(
+                    normalized, state,
+                    weight(model, block_name(block, ".norm2.weight")),
+                    weight(model, block_name(block, ".norm2.bias")),
+                    tokens, embedding, 1.0e-6f);
+                transformer_linear(
+                    operators, model, hidden, normalized,
+                    block_name(block, ".mlp.fc1.weight"),
+                    block_name(block, ".mlp.fc1.bias"),
+                    tokens, embedding, embedding * 4u, true);
+            }
             transformer_linear(
-                operators, model, hidden, normalized,
-                block_name(block, ".mlp.fc1.weight"),
-                block_name(block, ".mlp.fc1.bias"),
-                tokens, embedding, embedding * 4u, true);
-            transformer_linear(
-                operators, model, projected, hidden,
+                operators, model, next, hidden,
                 block_name(block, ".mlp.fc2.weight"),
                 block_name(block, ".mlp.fc2.bias"),
-                tokens, embedding * 4u, embedding);
-            operators.add_scaled(
-                next, state, projected,
-                weight(model, block_name(block, ".ls2.gamma")),
-                static_cast<std::uint32_t>(elements), embedding);
+                tokens, embedding * 4u, embedding, false, &state,
+                &weight(model, block_name(block, ".ls2.gamma")));
             std::swap(state, next);
             for (std::uint32_t capture = 0u;
                 capture < config.capture_count; ++capture) {
@@ -153,27 +171,14 @@ EncoderOutput encode_vits(
                     tokens, embedding, 1.0e-6f);
                 const std::string projection = "encoder.output_projections." +
                     std::to_string(capture);
+                const bool accumulate = captured_count++ != 0u;
                 operators.project_tokens(
-                    captured[capture], normalized,
+                    output.features, normalized,
                     weight(model, projection + ".weight"),
                     weight(model, projection + ".bias"),
                     token_width, token_height, embedding,
-                    config.decoder_embedding);
+                    config.decoder_embedding, false, 1u, accumulate);
             }
-    };
-    const auto finish = [&] {
-        da3_native::VulkanBuffer accumulator = std::move(captured[0]);
-        for (std::uint32_t capture = 1u;
-            capture < config.capture_count; ++capture) {
-            const bool last = capture + 1u == config.capture_count;
-            da3_native::VulkanBuffer sum = last ? da3_native::VulkanBuffer{} :
-                context.create_device_buffer(std::uint64_t(patches) *
-                    config.decoder_embedding * sizeof(float));
-            da3_native::VulkanBuffer& destination = last ? output.features : sum;
-            operators.add(destination, accumulator, captured[capture],
-                patches * config.decoder_embedding);
-            if (!last) accumulator = std::move(sum);
-        }
     };
 #if defined(__ANDROID__)
     // Keep each transformer block in a bounded submission. A single command
@@ -183,7 +188,6 @@ EncoderOutput encode_vits(
     for (std::uint32_t block = 0; block < config.blocks; ++block) {
         context.batch([&] { run_block(block); });
     }
-    context.batch(finish);
 #else
     // Desktop drivers do not have the Adreno watchdog constraint. One command
     // buffer avoids a CPU/GPU round trip for every transformer block.
@@ -192,7 +196,6 @@ EncoderOutput encode_vits(
         for (std::uint32_t block = 0; block < config.blocks; ++block) {
             run_block(block);
         }
-        finish();
     });
 #endif
     context.copy(

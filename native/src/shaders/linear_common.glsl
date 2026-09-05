@@ -26,11 +26,18 @@ float read_weight(uint index) {
 layout(set = 0, binding = 3, std430) readonly buffer Bias {
     float data[];
 } bias_buffer;
+layout(set = 0, binding = 4, std430) readonly buffer Residual {
+    float data[];
+} residual_buffer;
+layout(set = 0, binding = 5, std430) readonly buffer Scale {
+    float data[];
+} scale_buffer;
 
 layout(push_constant) uniform Parameters {
     uint rows;
     uint input_columns;
     uint output_columns;
+    uint residual;
 } parameters;
 
 #define K_STRIDE (K_TILE + 1)
@@ -113,9 +120,19 @@ void main() {
         for (uint column = 0; column < 4; ++column) {
             const uint output_column = column_base + column;
             if (output_column < parameters.output_columns) {
+                float value =
+                    sums[row][column] + bias_buffer.data[output_column];
+                if (parameters.residual != 0) {
+                    precise float scaled =
+                        value * scale_buffer.data[output_column];
+                    precise float result = residual_buffer.data[
+                        output_row * parameters.output_columns +
+                        output_column] + scaled;
+                    value = result;
+                }
                 output_buffer.data[
                     output_row * parameters.output_columns + output_column] =
-                    sums[row][column] + bias_buffer.data[output_column];
+                    value;
             }
         }
     }
