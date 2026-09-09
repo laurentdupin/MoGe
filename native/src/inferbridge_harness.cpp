@@ -15,6 +15,16 @@
 #include <string>
 #include <thread>
 
+struct ibrh_job;
+struct GpuQueue {
+    std::mutex queue_mutex;
+    std::condition_variable queue_condition;
+    std::deque<ibrh_job*> queue;
+    bool stopping = false;
+    bool exited = false;
+    std::deque<std::shared_ptr<moge2_native::ExternalJob>> retired;
+};
+
 struct ibrh_runtime {
 #if defined(__linux__) && !defined(__ANDROID__)
     bool force_host_transfers = false;
@@ -30,6 +40,7 @@ struct ibrh_job {
     std::atomic<bool> cancel_requested{false};
     std::shared_ptr<std::atomic<std::uint32_t>> occupied_slots;
     std::shared_ptr<moge2_native::ExternalJob> gpu;
+    std::shared_ptr<GpuQueue> gpu_queue;
     std::mutex gpu_mutex;
     moge2_native::ExternalTextureRequest request{};
     const std::uint8_t* host_input = nullptr;
@@ -50,10 +61,7 @@ struct ibrh_model {
     std::uint32_t background_distance_metres = 50u;
     std::shared_ptr<std::atomic<std::uint32_t>> occupied_slots =
         std::make_shared<std::atomic<std::uint32_t>>(0u);
-    std::mutex queue_mutex;
-    std::condition_variable queue_condition;
-    std::deque<ibrh_job*> queue;
-    bool stopping = false;
+    std::shared_ptr<GpuQueue> gpu_queue = std::make_shared<GpuQueue>();
     std::thread worker;
 };
 
@@ -129,6 +137,14 @@ bool parse_luid(const std::string& value, std::uint64_t& result) {
 void retain(ibrh_job* job) { job->references.fetch_add(1u); }
 void release(ibrh_job* job) {
     if (job && job->references.fetch_sub(1u) == 1u) {
+        if (job->gpu && job->gpu_queue) {
+            auto queue = job->gpu_queue;
+            {
+                std::lock_guard<std::mutex> lock(queue->queue_mutex);
+                if (!queue->exited) queue->retired.push_back(std::move(job->gpu));
+            }
+            queue->queue_condition.notify_one();
+        }
         if (job->occupied_slots) job->occupied_slots->fetch_sub(1u);
         delete job;
     }
@@ -137,15 +153,23 @@ void release(ibrh_job* job) {
 void worker_loop(ibrh_model* model) {
     for (;;) {
         ibrh_job* job = nullptr;
+        std::deque<std::shared_ptr<moge2_native::ExternalJob>> retired;
         {
-            std::unique_lock<std::mutex> lock(model->queue_mutex);
-            model->queue_condition.wait(lock, [&] {
-                return model->stopping || !model->queue.empty();
+            std::unique_lock<std::mutex> lock(model->gpu_queue->queue_mutex);
+            model->gpu_queue->queue_condition.wait(lock, [&] {
+                return model->gpu_queue->stopping || !model->gpu_queue->queue.empty() || !model->gpu_queue->retired.empty();
             });
-            if (model->stopping && model->queue.empty()) return;
-            job = model->queue.front();
-            model->queue.pop_front();
+            if (model->gpu_queue->stopping && model->gpu_queue->queue.empty() && model->gpu_queue->retired.empty()) {
+                model->gpu_queue->exited = true;
+                return;
+            }
+            retired.swap(model->gpu_queue->retired);
+            if (!model->gpu_queue->queue.empty()) {
+                job = model->gpu_queue->queue.front(); model->gpu_queue->queue.pop_front();
+            }
         }
+        retired.clear();
+        if (!job) continue;
         if (job->cancel_requested.load()) {
             job->state.store(IBRH_JOB_CANCELLED);
             release(job);
@@ -308,16 +332,16 @@ ibrh_result IBRH_CALL model_load(ibrh_runtime* runtime, std::size_t size,
 void IBRH_CALL model_unload(ibrh_model* model) {
     if (!model) return;
     {
-        std::lock_guard<std::mutex> lock(model->queue_mutex);
-        model->stopping = true;
-        for (ibrh_job* job : model->queue) {
+        std::lock_guard<std::mutex> lock(model->gpu_queue->queue_mutex);
+        model->gpu_queue->stopping = true;
+        for (ibrh_job* job : model->gpu_queue->queue) {
             job->cancel_requested.store(true);
             job->state.store(IBRH_JOB_CANCELLED);
             release(job);
         }
-        model->queue.clear();
+        model->gpu_queue->queue.clear();
     }
-    model->queue_condition.notify_all();
+    model->gpu_queue->queue_condition.notify_all();
     if (model->worker.joinable()) model->worker.join();
     delete model;
 }
@@ -464,6 +488,8 @@ ibrh_result IBRH_CALL submit(ibrh_model* model, std::size_t size,
         return IBRH_ERROR_INTERNAL;
     }
     job->occupied_slots = model->occupied_slots;
+    job->gpu_queue = model->gpu_queue;
+
     job->source_frame_id = request->source_frame_id;
     const auto& input = request->inputs[0];
     const auto& target = request->outputs[0];
@@ -493,16 +519,16 @@ ibrh_result IBRH_CALL submit(ibrh_model* model, std::size_t size,
             target.synchronization.value};
     }
     {
-        std::lock_guard<std::mutex> lock(model->queue_mutex);
-        if (model->stopping) {
+        std::lock_guard<std::mutex> lock(model->gpu_queue->queue_mutex);
+        if (model->gpu_queue->stopping) {
             job->occupied_slots.reset();
             model->occupied_slots->fetch_sub(1u);
             return IBRH_ERROR_INVALID_STATE;
         }
         retain(job.get());
-        model->queue.push_back(job.get());
+        model->gpu_queue->queue.push_back(job.get());
     }
-    model->queue_condition.notify_one();
+    model->gpu_queue->queue_condition.notify_one();
     *output = job.release();
     return IBRH_OK;
 }
