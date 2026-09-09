@@ -595,7 +595,7 @@ extern "C" IBRH_API ibrh_result IBRH_CALL ibrh_get_api(
     api->job_release = job_release;
     api->get_last_error = get_last_error;
 #if defined(__linux__) && !defined(__ANDROID__)
-    inferbridge::linux_capture::HarnessAdapter<LinuxCaptureHooks>::install(api);
+    inferbridge::linux_capture::HarnessAdapter<LinuxCaptureHooks, true>::install(api);
 #endif
     return IBRH_OK;
 }
