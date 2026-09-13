@@ -168,16 +168,17 @@ public:
                     reinterpret_cast<void*>(request.input_texture),
                     request.width, request.height, input_vk, input_usage);
             });
+        const auto [depth_width,depth_height]=depth_shape(request.width,request.height,request.num_tokens);
         auto& output = output_cache_.get_or_create({
             inferbridge::native_harness::stable_resource_identity(
                 request.output_texture, request.output_texture_identity),
-            request.width, request.height, VK_FORMAT_R32_SFLOAT,
+            depth_width, depth_height, VK_FORMAT_R32_SFLOAT,
             output_usage}, [&] {
                 validate_texture(d3d12_.Get(), request.output_texture,
-                    request.width, request.height, DXGI_FORMAT_R32_FLOAT);
+                    depth_width, depth_height, DXGI_FORMAT_R32_FLOAT);
                 return context_.import_d3d12_image(
                     reinterpret_cast<void*>(request.output_texture),
-                    request.width, request.height, VK_FORMAT_R32_SFLOAT,
+                    depth_width, depth_height, VK_FORMAT_R32_SFLOAT,
                     output_usage);
             });
         auto wait = context_.import_d3d12_fence(
@@ -199,7 +200,7 @@ public:
                 (void)infer_vits_normal(context_, model_, operators_,
                     moge_operators_, config_, std::move(image),
                     encoder_width, encoder_height,
-                    request.width, request.height,
+                    depth_width, depth_height,
                     request.background_distance_metres, &output);
                 context_.release_external_image(input,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -241,9 +242,9 @@ public:
         context_.upload(image, normalized.data(), normalized.size() * sizeof(float));
         auto depth = infer_vits_normal(context_, model_, operators_,
             moge_operators_, config_, std::move(image), encoder_width,
-            encoder_height, width, height, background_distance_metres);
+            encoder_height, token_width*16u, token_height*16u, background_distance_metres);
         context_.download(depth.depth, output,
-            static_cast<std::size_t>(width) * height * sizeof(float));
+            static_cast<std::size_t>(token_width*16u) * (token_height*16u) * sizeof(float));
     }
 
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -260,8 +261,8 @@ public:
         auto image=inferbridge::linux_capture::capture_tensor(context_,source,width,height,
             {1,false,{.485f,.456f,.406f,0},{.229f,.224f,.225f,1}});
         auto depth=infer_vits_normal(context_,model_,operators_,moge_operators_,config_,
-            std::move(image),width,height,source.width,source.height,background);
-        context_.download(depth.depth,output,uint64_t(source.width)*source.height*sizeof(float));
+            std::move(image),width,height,(width/14)*16,(height/14)*16,background);
+        context_.download(depth.depth,output,uint64_t(width/14*16)*(height/14*16)*sizeof(float));
     }
 #endif
     void transfer_counters(

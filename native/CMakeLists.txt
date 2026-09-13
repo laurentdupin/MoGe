@@ -15,6 +15,9 @@ if(MOGE2_WITH_VULKAN)
   find_package(Vulkan REQUIRED COMPONENTS glslc)
   set(MOGE2_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
   file(MAKE_DIRECTORY "${MOGE2_GENERATED_DIR}")
+  # Included shader bodies must invalidate cached SPIR-V as well.
+  file(GLOB MOGE2_SHADER_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.glsl")
   function(moge2_shader NAME)
   set(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/${NAME}.glsl")
   set(SPIRV "${MOGE2_GENERATED_DIR}/${NAME}.spv")
@@ -23,7 +26,7 @@ if(MOGE2_WITH_VULKAN)
     COMMAND Vulkan::glslc -fshader-stage=compute --target-env=vulkan1.3
       --target-spv=spv1.6 -Werror "-I${CMAKE_CURRENT_SOURCE_DIR}/src/shaders"
       -o "${SPIRV}" "${SOURCE}"
-    DEPENDS "${SOURCE}" VERBATIM)
+    DEPENDS "${SOURCE}" ${MOGE2_SHADER_SOURCES} VERBATIM)
   add_custom_command(OUTPUT "${HEADER}"
     COMMAND "${CMAKE_COMMAND}" "-DINPUT=${SPIRV}" "-DOUTPUT=${HEADER}"
       "-DVARIABLE=da3_${NAME}_spv"

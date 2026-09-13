@@ -84,9 +84,9 @@ void require_half_elements(
 VulkanOperators::VulkanOperators(VulkanContext& context)
     : context_(context),
       linear_(context.create_pipeline(
-          da3_linear_spv, da3_linear_spv_size, 4, 12)),
+          da3_linear_spv, da3_linear_spv_size, 6, 16)),
       linear16_(context.create_pipeline(
-          da3_linear16_spv, da3_linear16_spv_size, 4, 12)),
+          da3_linear16_spv, da3_linear16_spv_size, 6, 16)),
       linear_vec8_(context.create_pipeline(
           da3_linear_vec8_spv, da3_linear_vec8_spv_size, 6, 16)),
       quantize_rows_int8_(context.supports_packed_int8_dot() &&

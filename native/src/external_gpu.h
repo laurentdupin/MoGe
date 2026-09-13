@@ -4,6 +4,8 @@
 #endif
 
 #include <cstdint>
+#include <cmath>
+#include <algorithm>
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -11,6 +13,11 @@
 
 namespace moge2_native {
 
+inline std::pair<std::uint32_t,std::uint32_t> depth_shape(std::uint32_t width, std::uint32_t height, std::uint32_t tokens) {
+    const float aspect=float(width)/float(height);
+    return {std::max(1u,uint32_t(std::nearbyint(std::sqrt(float(tokens)*aspect))))*16u,
+            std::max(1u,uint32_t(std::nearbyint(std::sqrt(float(tokens)/aspect))))*16u};
+}
 struct ExternalGpuCapabilities {
     bool available = false;
     std::uint64_t adapter_luid = 0u;

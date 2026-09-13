@@ -520,8 +520,9 @@ public:
         texture_request.wait_event = request.wait_fence;
         texture_request.wait_value = request.wait_value;
         texture_request.output_texture = request.output_texture;
-        texture_request.output_width = request.width;
-        texture_request.output_height = request.height;
+        const auto [depth_width,depth_height]=depth_shape(request.width,request.height,request.num_tokens);
+        texture_request.output_width = depth_width;
+        texture_request.output_height = depth_height;
         texture_request.signal_event = request.signal_fence;
         texture_request.signal_value = request.signal_value;
         std::lock_guard<std::mutex> lock(mutex_);
@@ -529,12 +530,12 @@ public:
             auto prepared = texture_pipeline_->prepare(texture_request,
                 encoder_width, encoder_height, mean, deviation);
             auto auxiliary = auxiliary_pool_->acquire({
-                {{1, 3, static_cast<NSInteger>(request.height),
-                    static_cast<NSInteger>(request.width)},
+                {{1, 3, static_cast<NSInteger>(depth_height),
+                    static_cast<NSInteger>(depth_width)},
                     MPSDataTypeFloat32, sizeof(float),
                     MTLResourceStorageModePrivate, "Points Output"},
-                {{1, 1, static_cast<NSInteger>(request.height),
-                    static_cast<NSInteger>(request.width)},
+                {{1, 1, static_cast<NSInteger>(depth_height),
+                    static_cast<NSInteger>(depth_width)},
                     MPSDataTypeFloat32, sizeof(float),
                     MTLResourceStorageModePrivate, "Mask Output"},
                 {{1}, MPSDataTypeFloat32, sizeof(float),
@@ -549,10 +550,10 @@ public:
             const std::uint64_t key =
                 (static_cast<std::uint64_t>(token_width) << 48u) |
                 (static_cast<std::uint64_t>(token_height) << 32u) |
-                (static_cast<std::uint64_t>(request.width) << 16u) |
-                request.height;
+                (static_cast<std::uint64_t>(depth_width) << 16u) |
+                depth_height;
             Plan& plan = get_plan(key, encoder_width, encoder_height,
-                request.width, request.height);
+                depth_width, depth_height);
             NSArray<MPSGraphTensorData*>* outputs = @[
                 auxiliary->data(0), auxiliary->data(1), auxiliary->data(2)];
             MPSGraphExecutableExecutionDescriptor* descriptor =
@@ -571,7 +572,7 @@ public:
             inferbridge::native_harness::metal::label_encoder(
                 encoder, "MoGe-2", "Geometry Postprocess");
             struct SolveParameters { std::uint32_t width, height; } solve{
-                request.width, request.height};
+                depth_width, depth_height};
             [encoder setComputePipelineState:solve_pipeline_];
             [encoder setBuffer:focal offset:0 atIndex:0];
             [encoder setBuffer:points offset:0 atIndex:1];
@@ -581,7 +582,7 @@ public:
                 threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
             struct FinalParameters {
                 std::uint32_t width, height; float background;
-            } final{request.width, request.height,
+            } final{depth_width, depth_height,
                 request.background_distance_metres};
             [encoder setComputePipelineState:final_pipeline_];
             [encoder setTexture:prepared.output_texture atIndex:0];
@@ -593,7 +594,7 @@ public:
             const NSUInteger tx = final_pipeline_.threadExecutionWidth;
             const NSUInteger ty = std::max<NSUInteger>(1,
                 final_pipeline_.maxTotalThreadsPerThreadgroup / tx);
-            [encoder dispatchThreads:MTLSizeMake(request.width, request.height, 1)
+            [encoder dispatchThreads:MTLSizeMake(depth_width, depth_height, 1)
                 threadsPerThreadgroup:MTLSizeMake(tx, ty, 1)];
             [encoder endEncoding];
             [command encodeSignalEvent:prepared.signal_event
@@ -622,12 +623,13 @@ public:
         auto normalized = inferbridge::native_harness::resize_bgra8_to_normalized_chw(
             pixels, width, height, row_stride, encoder_width, encoder_height,
             rgba, normalization);
+        const auto [depth_width,depth_height]=depth_shape(width,height,num_tokens);
         const std::uint64_t key = (static_cast<std::uint64_t>(token_width) << 48u) |
             (static_cast<std::uint64_t>(token_height) << 32u) |
-            (static_cast<std::uint64_t>(width) << 16u) | height;
+            (static_cast<std::uint64_t>(depth_width) << 16u) | depth_height;
         std::lock_guard<std::mutex> lock(mutex_);
         @autoreleasepool {
-            Plan& plan = get_plan(key, encoder_width, encoder_height, width, height);
+            Plan& plan = get_plan(key, encoder_width, encoder_height, depth_width, depth_height);
             id<MTLBuffer> buffer = [device_ newBufferWithBytes:normalized.data()
                 length:normalized.size() * sizeof(float)
                 options:MTLResourceStorageModeShared];
@@ -644,7 +646,7 @@ public:
                 resultsArray:nil executionDescriptor:descriptor];
             if (results.count != 3u)
                 throw std::runtime_error("MoGe-2 Metal graph returned invalid outputs");
-            const std::size_t count = static_cast<std::size_t>(width) * height;
+            const std::size_t count = static_cast<std::size_t>(depth_width) * depth_height;
             std::vector<float> points(count * 3u);
             std::vector<float> mask(count);
             float scale = 0.0f;
@@ -652,7 +654,7 @@ public:
             [results[1].mpsndarray readBytes:mask.data() strideBytes:nil];
             [results[2].mpsndarray readBytes:&scale strideBytes:nil];
             const auto focal_shift = solve_focal_shift(
-                points.data(), mask.data(), width, height);
+                points.data(), mask.data(), depth_width, depth_height);
             for (std::size_t i = 0; i < count; ++i) {
                 const float value = points[2u * count + i] + focal_shift[1];
                 output[i] = mask[i] > 0.5f && value > 0.0f

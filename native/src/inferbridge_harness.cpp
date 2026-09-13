@@ -1,3 +1,4 @@
+#include <inferbridge/native_harness_json.h>
 #include "inferbridge_harness.h"
 
 #include "external_gpu.h"
@@ -102,17 +103,9 @@ bool json_uint(const std::string& json, const std::string& key,
     return true;
 }
 
-bool json_string(const std::string& json, const std::string& key,
-    std::string& result) {
-    std::size_t position = json.find("\"" + key + "\"");
-    if (position == std::string::npos) return false;
-    position = json.find(':', position);
-    position = json.find('"', position + 1u);
-    if (position == std::string::npos) return false;
-    const std::size_t end = json.find('"', position + 1u);
-    if (end == std::string::npos) return false;
-    result = json.substr(position + 1u, end - position - 1u);
-    return true;
+bool json_string(
+    const std::string& json, const std::string& key, std::string& value) {
+    return inferbridge::harness_json::string_member(json, key, value);
 }
 
 bool parse_luid(const std::string& value, std::uint64_t& result) {
@@ -393,8 +386,8 @@ ibrh_result IBRH_CALL model_plan_outputs(const ibrh_model* model,
     const auto result = model_get_port(model, IBRH_PORT_OUTPUT, 0u,
         sizeof(outputs[0]), &outputs[0]);
     if (result != IBRH_OK) return result;
-    outputs[0].width = request->inputs[0].width;
-    outputs[0].height = request->inputs[0].height;
+    const auto shape=moge2_native::depth_shape(request->inputs[0].width,request->inputs[0].height,model->num_tokens);
+    outputs[0].width=shape.first;outputs[0].height=shape.second;
     outputs[0].flags = 0u;
     return IBRH_OK;
 }
@@ -436,8 +429,7 @@ bool valid_binding(const ibrh_transfer_binding& input,
         output.synchronization.operation == IBRH_SYNC_SIGNAL &&
         output.synchronization.native_handle_type == sync_handle &&
         output.synchronization.native_handle != 0u &&
-        input.resource.width == output.resource.width &&
-        input.resource.height == output.resource.height;
+        output.resource.width > 0u && output.resource.height > 0u;
 #else
     return false;
 #endif
@@ -459,8 +451,7 @@ bool valid_host_binding(const ibrh_transfer_binding& input,
         input.resource.native_handle_type == IBRH_NATIVE_HANDLE_HOST_POINTER &&
         output.resource.native_handle_type == IBRH_NATIVE_HANDLE_HOST_POINTER &&
         input.resource.native_handle != 0u && output.resource.native_handle != 0u &&
-        input.resource.width == output.resource.width &&
-        input.resource.height == output.resource.height &&
+        output.resource.width > 0u && output.resource.height > 0u &&
         input.resource.row_stride_bytes >= input.resource.width * 4u &&
         input.resource.byte_size >= input_bytes &&
         output.resource.byte_size >= output_bytes;
@@ -475,6 +466,10 @@ ibrh_result IBRH_CALL submit(ibrh_model* model, std::size_t size,
     if (request->input_count != 1u || request->output_count != 1u ||
         !request->inputs || !request->outputs)
         return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
+    const auto shape=moge2_native::depth_shape(request->inputs[0].resource.width,
+        request->inputs[0].resource.height,model->num_tokens);
+    if(request->outputs[0].resource.width!=shape.first || request->outputs[0].resource.height!=shape.second)
+        return IBRH_ERROR_INVALID_ARGUMENT;
     const bool host = valid_host_binding(request->inputs[0], request->outputs[0]);
     const bool external = valid_binding(request->inputs[0], request->outputs[0]);
     if (!host && !external) return IBRH_ERROR_UNSUPPORTED_CAPABILITY;

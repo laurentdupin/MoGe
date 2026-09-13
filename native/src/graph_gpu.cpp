@@ -252,14 +252,22 @@ DepthOutput infer_vits_normal(
             channels, config.head_residual_blocks);
     });
     context.batch([&] {
-        VulkanBuffer points_resized = allocate(context, output_width, output_height, 3u);
-        VulkanBuffer mask_resized = allocate(context, output_width, output_height, 1u);
+        VulkanBuffer points_resized, mask_resized;
+        if (output_width == encoded.token_width*16u && output_height == encoded.token_height*16u) {
+            points = allocate(context, output_width, output_height, 3u);
+            mask = allocate(context, output_width, output_height, 1u);
+            moge.remap_points_mask(points, mask, points_low, mask_low, pixels);
+            return;
+        } else {
+        points_resized = allocate(context, output_width, output_height, 3u);
+        mask_resized = allocate(context, output_width, output_height, 1u);
         moge.bilinear(points_resized, points_low,
             encoded.token_width * 16u, encoded.token_height * 16u,
             output_width, output_height, 3u);
         moge.bilinear(mask_resized, mask_low,
             encoded.token_width * 16u, encoded.token_height * 16u,
             output_width, output_height, 1u);
+        }
         points = allocate(context, output_width, output_height, 3u);
         mask = allocate(context, output_width, output_height, 1u);
         moge.remap_points_mask(points, mask, points_resized, mask_resized, pixels);
