@@ -377,24 +377,12 @@ VulkanContext::VulkanContext(
     std::vector<VkQueueFamilyProperties> families(family_count);
     vkGetPhysicalDeviceQueueFamilyProperties(
         physical_device_, &family_count, families.data());
-    auto family = families.end();
 #if defined(_WIN32)
-    // Sharing a graphics-capable queue with Godot can stall rendering during
-    // long inference dispatches. Preserve the existing policy elsewhere.
-    family = std::find_if(
-        families.begin(), families.end(), [](const auto& candidate) {
-            return candidate.queueCount > 0 &&
-                (candidate.queueFlags & VK_QUEUE_COMPUTE_BIT) != 0 &&
-                (candidate.queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0;
-        });
+    constexpr bool prefer_dedicated = true;
+#else
+    constexpr bool prefer_dedicated = false;
 #endif
-    if (family == families.end()) {
-        family = std::find_if(
-            families.begin(), families.end(), [](const auto& candidate) {
-                return candidate.queueCount > 0 &&
-                    (candidate.queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
-            });
-    }
+    auto family = inferbridge::native_harness::select_inference_queue_family(families, prefer_dedicated);
     if (family == families.end()) {
         throw std::runtime_error("Vulkan device has no compute queue");
     }
