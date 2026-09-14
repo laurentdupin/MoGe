@@ -1,3 +1,4 @@
+#include "inferbridge/native_harness_queue_priority.h"
 #include <inferbridge/native_harness_json.h>
 #include "inferbridge_harness.h"
 
@@ -284,6 +285,7 @@ ibrh_result IBRH_CALL model_load(ibrh_runtime* runtime, std::size_t size,
     if (!model) return IBRH_ERROR_INTERNAL;
     model->runtime = runtime;
     const std::string parameters = text(request->parameters_json);
+    const inferbridge::native_harness::ScopedQueuePriorityRequest queue_priority_scope(parameters);
     inferbridge::native::Precision precision;
     try {
         precision = inferbridge::native::precision_from_parameters_json(parameters);

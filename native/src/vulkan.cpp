@@ -1,4 +1,5 @@
 #include "vulkan.h"
+#include "inferbridge/native_harness_vulkan_queue_priority.h"
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <inferbridge/linux_capture_vulkan.h>
 #include <linux_capture_preprocess_spv.h>
@@ -491,7 +492,7 @@ VulkanContext::VulkanContext(
         nullptr,
     };
     check(
-        vkCreateDevice(physical_device_, &device_info, nullptr, &device_),
+        inferbridge::native_harness::create_inference_vulkan_device(physical_device_, &device_info, nullptr, &device_),
         "vkCreateDevice");
 #if defined(_WIN32)
     get_memory_win32_handle_properties_ =
