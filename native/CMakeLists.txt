@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 project(moge2_native VERSION 0.1.1 LANGUAGES C CXX)
-include("${CMAKE_CURRENT_LIST_DIR}/../../native_support/InferBridgeNativeHarnessSupport.cmake")
+set(INFERBRIDGE_NATIVE_SUPPORT_DIR "" CACHE PATH
+    "InferBridge native harness SDK directory")
+if(NOT EXISTS "${INFERBRIDGE_NATIVE_SUPPORT_DIR}/InferBridgeNativeHarnessSupport.cmake")
+    message(FATAL_ERROR
+        "INFERBRIDGE_NATIVE_SUPPORT_DIR must identify the InferBridge native harness SDK")
+endif()
+include("${INFERBRIDGE_NATIVE_SUPPORT_DIR}/InferBridgeNativeHarnessSupport.cmake")
 link_libraries(InferBridge::NativeHarnessSupport)
 option(MOGE2_WITH_METAL "Build the Apple Metal/MPSGraph executor" ${APPLE})
 option(MOGE2_WITH_VULKAN "Build the Vulkan/D3D12 executor" ON)

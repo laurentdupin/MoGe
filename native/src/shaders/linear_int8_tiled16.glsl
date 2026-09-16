@@ -3,4 +3,4 @@
 
 #define K_PACKED 16
 #define K_STRIDE 17
-#include "../../../../native_support/shaders/linear_int8_tiled_common.glsl"
+#include "linear_int8_tiled_common.glsl"
